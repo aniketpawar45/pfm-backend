@@ -8,15 +8,15 @@ from api.core.config import settings
 class AIService:
     @classmethod
     def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
-        # Clear any rogue environment variables that might override the base URL
-        os.environ.pop("OPENAI_BASE_URL", None)
-        os.environ.pop("OPENAI_API_BASE", None)
+        # Explicitly purge any rogue environment variables that break the OpenAI SDK base URL
+        for env_var in ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_KEY"]:
+            os.environ.pop(env_var, None)
 
         api_key = settings.GROQ_API_KEY.strip("'\" ") if settings.GROQ_API_KEY else ""
         if not api_key:
             raise ValueError("GROQ_API_KEY is missing or empty.")
 
-        # Initialize Groq client with an explicit, secure base URL
+        # Initialize Groq client with a hardcoded, absolute base URL
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
@@ -43,7 +43,7 @@ class AIService:
             f"Today's date in IST is {current_date_ist}.\n"
             f"CRITICAL RULES:\n"
             f"1. LISTS/BREAKDOWNS: If the user provides a large itemized list or grocery list, aggregate them into a SINGLE bulk expense transaction using the grand total or estimated total provided at the bottom, with a clean description like 'Monthly Groceries'.\n"
-            f"2. MULTI-ACTIONS: If multiple distinct transactions are described (e.g., 'took 500 from X and gave 200 to Y'), return a JSON array of transaction objects. If a single transaction, return a single JSON object.\n"
+            f"2. MULTI-ACTIONS: If multiple distinct transactions are described, return a JSON array of transaction objects. If a single transaction, return a single JSON object.\n"
             f"3. Each transaction object must contain strictly these keys:\n"
             f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
             f"   - amount: float or null (numeric value only, no currency symbols)\n"
