@@ -77,7 +77,6 @@ class TelegramService:
         try:
             parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
 
-            # Normalize response into a list to support both single transactions and multi-transaction arrays
             if isinstance(parsed_data, dict):
                 transactions = [parsed_data]
             elif isinstance(parsed_data, list):
@@ -121,7 +120,6 @@ class TelegramService:
                     from datetime import date as dt_date
                     date = dt_date.today().isoformat()
 
-                # Save each transaction to Database
                 admin_client.table("transactions").insert({
                     "user_id": user_id,
                     "account_id": account_id,

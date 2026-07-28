@@ -16,14 +16,15 @@ class AIService:
         current_date_ist = datetime.now(IST).date().isoformat()
 
         system_instruction = (
-            f"You are an AI financial assistant that parses natural language or audio into financial transactions in Indian Rupees (INR).\n"
+            f"You are an AI financial assistant that parses natural language, audio, or itemized lists into financial transactions in Indian Rupees (INR).\n"
             f"Today's date in IST is {current_date_ist}.\n"
-            f"Analyze the input text or audio. If multiple transactions are described (e.g. multiple distinct actions or transfers), return a JSON array of transaction objects. If a single transaction, return a single JSON object.\n"
-            f"Each object must have these keys:\n"
+            f"CRITICAL RULE FOR LISTS/BREAKDOWNS: If the user provides a large itemized list, budget breakdown, or grocery list, do NOT create individual transactions for every single item. Instead, aggregate them into a SINGLE bulk expense transaction using the grand total or estimated total provided at the bottom (or sum the items if needed), with a clean description like 'Monthly Groceries'.\n"
+            f"For normal multi-action sentences (e.g., 'took 500 from X and gave 200 to Y'), return a JSON array of separate transaction objects. For a single transaction, return a single JSON object.\n"
+            f"Each transaction object must have these keys:\n"
             f"- is_transaction: boolean (true if it's a financial transaction, false if general chat or non-financial)\n"
             f"- amount: float or null (numeric value only, no currency symbols)\n"
             f"- type: string ('expense' or 'income') or null\n"
-            f"- description: string or null (short, clean description including names like Sushma or Ishu)\n"
+            f"- description: string or null (short, clean description)\n"
             f"- date: string or null (YYYY-MM-DD format, infer relative dates based on IST date)\n"
         )
 
