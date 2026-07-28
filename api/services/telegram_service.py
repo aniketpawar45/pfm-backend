@@ -118,12 +118,12 @@ class TelegramService:
 
         except Exception as e:
             print(f"AI Parse Error: {str(e)}")
-            await cls.send_message(chat_id, "🤖 Sorry, I couldn't understand that transaction. Please try being a bit more specific.")
+            # CHANGED: Now sends the exact Python error back to Telegram for debugging
+            await cls.send_message(chat_id, f"🤖 Debug Error: <code>{str(e)}</code>")
 
     @classmethod
     async def send_message(cls, chat_id: int, text: str):
         async with httpx.AsyncClient() as client:
-            # CHANGED: Parse mode is now HTML
             await client.post(f"{cls.TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
 
     @classmethod
@@ -174,7 +174,6 @@ class TelegramService:
         if not user_id: return
         parts = text.split(" ")
         if len(parts) < 3:
-            # CHANGED: Removed the < > brackets as they break HTML parsing
             await cls.send_message(chat_id, "Usage: <code>/add_account Name Type [Balance]</code>")
             return
         admin_client = get_supabase_admin()
