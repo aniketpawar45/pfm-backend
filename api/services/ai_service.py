@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from api.core.config import settings
@@ -7,13 +8,21 @@ from api.core.config import settings
 class AIService:
     @classmethod
     def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
-        # Initialize Groq client using its OpenAI-compatible high-speed endpoint
+        # Clear any rogue environment variables that might override the base URL
+        os.environ.pop("OPENAI_BASE_URL", None)
+        os.environ.pop("OPENAI_API_BASE", None)
+
+        api_key = settings.GROQ_API_KEY.strip("'\" ") if settings.GROQ_API_KEY else ""
+        if not api_key:
+            raise ValueError("GROQ_API_KEY is missing or empty.")
+
+        # Initialize Groq client with an explicit, secure base URL
         client = OpenAI(
-            api_key=settings.GROQ_API_KEY,
+            api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
         )
 
-        # Transcribe voice notes securely in-memory using Whisper Large V3
+        # Transcribe voice notes securely using Whisper Large V3
         if audio_bytes:
             try:
                 audio_file = ("voice_note.ogg", audio_bytes)
