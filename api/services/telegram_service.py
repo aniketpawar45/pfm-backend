@@ -6,8 +6,8 @@ from api.services.ai_service import AIService
 
 
 class TelegramService:
-    TELEGRAM_API_URL = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}"
-    FILE_API_URL = f"https://api.telegram.org/file/bot{settings.TELEGRAM_BOT_TOKEN}"
+    TELEGRAM_API_URL = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){settings.TELEGRAM_BOT_TOKEN}"
+    FILE_API_URL = f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){settings.TELEGRAM_BOT_TOKEN}"
 
     @classmethod
     async def process_update(cls, update: Dict[str, Any]):
@@ -17,7 +17,6 @@ class TelegramService:
 
         chat_id = message["chat"]["id"]
 
-        # Handle Voice Messages
         if "voice" in message:
             await cls.handle_voice_message(chat_id, message["voice"]["file_id"])
             return
@@ -26,7 +25,6 @@ class TelegramService:
         if not text:
             return
 
-        # Handle Commands
         if text.startswith("/start"):
             await cls.send_message(chat_id,
                                    "Welcome to PFM! Send a voice note or type a natural sentence like: <i>'I spent 400 on a shirt yesterday'</i>.")
@@ -46,7 +44,6 @@ class TelegramService:
         elif text.startswith("/"):
             await cls.send_message(chat_id, "Unknown command.")
         else:
-            # Handle Natural Language Text (No slash command)
             await cls.process_natural_language(chat_id, text_input=text)
 
     @classmethod
@@ -71,7 +68,7 @@ class TelegramService:
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
         user_id = cls._get_user_id(chat_id)
         if not user_id:
-            await cls.send_message(chat_id, "Please link your account first.")
+            await cls.send_message(chat_id, "Please link your account first using your code.")
             return
 
         try:
@@ -85,8 +82,7 @@ class TelegramService:
                 transactions = []
 
             if not transactions:
-                await cls.send_message(chat_id,
-                                       "🤖 I couldn't parse that transaction. Please try being a bit more specific.")
+                await cls.send_message(chat_id, "🤖 I couldn't parse that. Please try being more specific.")
                 return
 
             admin_client = get_supabase_admin()
@@ -140,7 +136,7 @@ class TelegramService:
                 await cls.send_message(chat_id, msg)
             else:
                 await cls.send_message(chat_id,
-                                       "🤖 I caught the details, but you didn't mention an amount. How much was it?")
+                                       "🤖 I can only help you track income and expenses. Try sending something like: <i>'Spent 500 on lunch today'</i>.")
 
         except Exception as e:
             print(f"AI Parse Error: {str(e)}")
