@@ -1,4 +1,105 @@
-import httpx
+import os
+from pathlib import Path
+
+# ==========================================
+# FILE CONTENTS TO WRITE
+# ==========================================
+
+REQUIREMENTS = r'''fastapi>=0.111.0
+uvicorn>=0.30.1
+supabase>=2.5.0
+httpx>=0.27.0
+pydantic>=2.7.4
+pydantic-settings>=2.3.4
+python-jose>=3.3.0
+python-multipart>=0.0.9
+google-generativeai>=0.7.2
+pytz>=2024.1
+'''
+
+CONFIG_PY = r'''from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    SUPABASE_URL: str
+    SUPABASE_KEY: str
+    SUPABASE_SERVICE_ROLE_KEY: str
+    TELEGRAM_BOT_TOKEN: str
+    JWT_SECRET: str
+    GEMINI_API_KEY: str
+    ENVIRONMENT: str = "production"
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
+
+settings = Settings()
+'''
+
+AI_SERVICE_PY = r'''import json
+import google.generativeai as genai
+from datetime import datetime
+import pytz
+from api.core.config import settings
+
+# Configure Gemini API
+genai.configure(api_key=settings.GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+class AIService:
+    @staticmethod
+    def parse_transaction(text_input: str = None, audio_bytes: bytes = None) -> dict:
+        """
+        Parses natural language text or audio to extract transaction data.
+        Returns a dictionary: {"amount": float, "type": "income"|"expense", "description": str, "date": "YYYY-MM-DD"}
+        """
+        # Inject current context so AI knows what "yesterday" means
+        ist = pytz.timezone('Asia/Kolkata')
+        current_date = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
+
+        prompt = f"""
+        You are a financial parsing assistant. The current date and time in India (IST) is {current_date}.
+        Analyze the user's input and extract the financial transaction.
+        
+        Rules:
+        1. Determine if it is an 'income' or 'expense'.
+        2. Extract the absolute numerical amount.
+        3. Extract the item or description.
+        4. Calculate the exact date (YYYY-MM-DD) based on words like 'yesterday', 'today', or specific dates mentioned. If not mentioned, use today's date.
+        
+        Output EXCLUSIVELY as a valid JSON object with the following exact keys: 
+        "amount" (number), "type" (string: "income" or "expense"), "description" (string), "date" (string: YYYY-MM-DD).
+        Do not include markdown formatting, backticks, or any other text.
+        """
+
+        contents = [prompt]
+
+        if audio_bytes:
+            contents.append({
+                "mime_type": "audio/ogg",
+                "data": audio_bytes
+            })
+        elif text_input:
+            contents.append(f"User input: {text_input}")
+        else:
+            raise ValueError("Must provide text or audio")
+
+        response = model.generate_content(
+            contents,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.1 # Low temperature for factual extraction
+            )
+        )
+
+        try:
+            # Strip potential markdown formatting if Gemini disobeys instructions
+            clean_text = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_text)
+        except json.JSONDecodeError:
+            raise ValueError(f"Failed to parse AI response into JSON: {response.text}")
+'''
+
+TELEGRAM_SERVICE_PY = r'''import httpx
 from typing import Dict, Any
 from api.core.config import settings
 from api.core.database import get_supabase_admin
@@ -185,3 +286,43 @@ class TelegramService:
         profile = admin_client.table("profiles").select("id").eq("telegram_chat_id", chat_id).execute()
         if profile.data: return profile.data[0]["id"]
         return None
+'''
+
+# ==========================================
+# EXECUTION LOGIC
+# ==========================================
+
+files_to_write = {
+    "requirements.txt": REQUIREMENTS,
+    "api/core/config.py": CONFIG_PY,
+    "api/services/ai_service.py": AI_SERVICE_PY,
+    "api/services/telegram_service.py": TELEGRAM_SERVICE_PY,
+}
+
+def main():
+    print("Starting PFM codebase update...\n")
+    
+    for filepath, content in files_to_write.items():
+        path = Path(filepath)
+        
+        # Create directories if they don't exist
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"📁 Created directory: {path.parent}")
+            
+        # Write the file content
+        path.write_text(content.strip() + "\n", encoding="utf-8")
+        print(f"✅ Updated file: {filepath}")
+
+    print("\n🎉 Update successful!")
+    print("\n--- NEXT STEPS ---")
+    print("1. Get a free Gemini API key from: https://aistudio.google.com/app/apikey")
+    print("2. Add GEMINI_API_KEY=your_key_here to your local .env file.")
+    print("3. Go to Vercel Dashboard -> Settings -> Environment Variables and add GEMINI_API_KEY.")
+    print("4. Push your code to Vercel:")
+    print("   git add .")
+    print('   git commit -m "Added AI natural language and voice parsing"')
+    print("   git push")
+
+if __name__ == "__main__":
+    main()
