@@ -75,30 +75,20 @@ class TelegramService:
             return
 
         try:
-            # AI Magic happens here
             parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
 
-            # Check if the AI verified this as an actual financial transaction
-            if not parsed_data.get("is_transaction", True):
+            # Normalize response into a list to support both single transactions and multi-transaction arrays
+            if isinstance(parsed_data, dict):
+                transactions = [parsed_data]
+            elif isinstance(parsed_data, list):
+                transactions = parsed_data
+            else:
+                transactions = []
+
+            if not transactions:
                 await cls.send_message(chat_id,
-                                       "🤖 I can only help you track income and expenses. Try sending something like: <i>'Spent 500 on lunch today'</i>.")
+                                       "🤖 I couldn't parse that transaction. Please try being a bit more specific.")
                 return
-
-            # Gracefully check if the amount is missing or null
-            raw_amount = parsed_data.get("amount")
-            if raw_amount is None:
-                await cls.send_message(chat_id,
-                                       "🤖 I caught the details, but you didn't mention an amount. How much was it?")
-                return
-
-            amount = float(raw_amount)
-            tx_type = parsed_data.get("type", "expense")
-            description = parsed_data.get("description", "Uncategorized")
-            date = parsed_data.get("date")
-
-            if not date:
-                from datetime import date as dt_date
-                date = dt_date.today().isoformat()
 
             admin_client = get_supabase_admin()
 
@@ -113,25 +103,46 @@ class TelegramService:
             account_id = accs.data[0]["id"]
             acc_name = accs.data[0]["name"]
 
-            admin_client.table("transactions").insert({
-                "user_id": user_id,
-                "account_id": account_id,
-                "amount": amount,
-                "type": tx_type,
-                "description": description,
-                "transaction_date": f"{date}T12:00:00Z"
-            }).execute()
+            success_messages = []
+            for tx in transactions:
+                if not tx.get("is_transaction", True):
+                    continue
 
-            symbol = "+" if tx_type == "income" else "-"
-            await cls.send_message(
-                chat_id,
-                f"✨ <b>Got it!</b>\n"
-                f"• Type: <code>{tx_type.capitalize()}</code>\n"
-                f"• Amount: <code>{symbol}₹{amount:,.2f}</code>\n"
-                f"• For: {description}\n"
-                f"• Date: {date}\n"
-                f"• Account: {acc_name}"
-            )
+                raw_amount = tx.get("amount")
+                if raw_amount is None:
+                    continue
+
+                amount = float(raw_amount)
+                tx_type = tx.get("type", "expense")
+                description = tx.get("description", "Uncategorized")
+                date = tx.get("date")
+
+                if not date:
+                    from datetime import date as dt_date
+                    date = dt_date.today().isoformat()
+
+                # Save each transaction to Database
+                admin_client.table("transactions").insert({
+                    "user_id": user_id,
+                    "account_id": account_id,
+                    "amount": amount,
+                    "type": tx_type,
+                    "description": description,
+                    "transaction_date": f"{date}T12:00:00Z"
+                }).execute()
+
+                symbol = "+" if tx_type == "income" else "-"
+                success_messages.append(
+                    f"• <b>{tx_type.capitalize()}</b>: <code>{symbol}₹{amount:,.2f}</code> for {description} ({date})"
+                )
+
+            if success_messages:
+                msg = "✨ <b>Recorded Transactions:</b>\n" + "\n".join(
+                    success_messages) + f"\n• <b>Account:</b> {acc_name}"
+                await cls.send_message(chat_id, msg)
+            else:
+                await cls.send_message(chat_id,
+                                       "🤖 I caught the details, but you didn't mention an amount. How much was it?")
 
         except Exception as e:
             print(f"AI Parse Error: {str(e)}")
