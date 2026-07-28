@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import datetime, timezone, timedelta
 from google import genai
 from google.genai import types
 from api.core.config import settings
@@ -13,14 +13,18 @@ class AIService:
 
         contents = []
 
+        # Enforce IST timezone (UTC +5:30) for correct relative date mapping ("today", "yesterday")
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_date_ist = datetime.now(IST).date().isoformat()
+
         system_instruction = (
             f"You are an AI financial assistant that parses natural language or audio into financial transactions in Indian Rupees (INR).\n"
-            f"Today's date is {date.today().isoformat()}.\n"
+            f"Today's date in IST is {current_date_ist}.\n"
             f"Extract the following fields and return them in strict JSON format:\n"
             f"- amount: float (numeric value only, no currency symbols)\n"
             f"- type: string ('expense' or 'income')\n"
             f"- description: string (short, clean description of the transaction)\n"
-            f"- date: string (YYYY-MM-DD format, infer relative dates like 'yesterday' or 'today' based on the current date)\n"
+            f"- date: string (YYYY-MM-DD format, infer relative dates like 'yesterday' or 'today' based on the current date provided)\n"
         )
 
         # Handle audio bytes if a voice note was sent
@@ -36,7 +40,7 @@ class AIService:
         if text_input:
             contents.append(text_input)
 
-        # Updated to the current production model
+        # Call the model using the active production model
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=contents,
