@@ -1,56 +1,54 @@
 import json
-from datetime import datetime
-import pytz
+from datetime import date
 from google import genai
 from google.genai import types
 from api.core.config import settings
 
+
 class AIService:
-    @staticmethod
-    def parse_transaction(text_input: str = None, audio_bytes: bytes = None) -> dict:
-        # Lazy initialization: Only boots up when a message is received
+    @classmethod
+    def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict:
+        # Initialize the modern Google GenAI client
         client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        
-        ist = pytz.timezone('Asia/Kolkata')
-        current_date = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
 
-        prompt = f"""
-        You are a financial parsing assistant. The current date and time in India (IST) is {current_date}.
-        Analyze the user's input and extract the financial transaction.
-        
-        Rules:
-        1. Determine if it is an 'income' or 'expense'.
-        2. Extract the absolute numerical amount.
-        3. Extract the item or description.
-        4. Calculate the exact date (YYYY-MM-DD) based on words like 'yesterday', 'today', or specific dates mentioned. If not mentioned, use today's date.
-        
-        Output EXCLUSIVELY as a valid JSON object with the following exact keys: 
-        "amount" (number), "type" (string: "income" or "expense"), "description" (string), "date" (string: YYYY-MM-DD).
-        Do not include markdown formatting, backticks, or any other text.
-        """
+        contents = []
 
-        contents = [prompt]
+        system_instruction = (
+            f"You are an AI financial assistant that parses natural language or audio into financial transactions in Indian Rupees (INR).\n"
+            f"Today's date is {date.today().isoformat()}.\n"
+            f"Extract the following fields and return them in strict JSON format:\n"
+            f"- amount: float (numeric value only, no currency symbols)\n"
+            f"- type: string ('expense' or 'income')\n"
+            f"- description: string (short, clean description of the transaction)\n"
+            f"- date: string (YYYY-MM-DD format, infer relative dates like 'yesterday' or 'today' based on the current date)\n"
+        )
 
+        # Handle audio bytes if a voice note was sent
         if audio_bytes:
             contents.append(
-                types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg")
+                types.Part.from_bytes(
+                    data=audio_bytes,
+                    mime_type="audio/ogg",
+                )
             )
-        elif text_input:
-            contents.append(f"User input: {text_input}")
-        else:
-            raise ValueError("Must provide text or audio")
 
+        # Handle text input if available
+        if text_input:
+            contents.append(text_input)
+
+        # Call the model using the correct name WITHOUT the 'models/' prefix
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model="gemini-1.5-flash",
             contents=contents,
             config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
                 response_mime_type="application/json",
-                temperature=0.1
-            )
+            ),
         )
 
         try:
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
+            result_text = response.text
+            data = json.loads(result_text)
+            return data
         except Exception as e:
-            raise ValueError(f"Failed to parse AI response: {str(e)}")
+            raise ValueError(f"Failed to parse AI response as JSON: {str(e)}")
