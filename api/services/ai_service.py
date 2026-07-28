@@ -36,9 +36,9 @@ class AIService:
         if text_input:
             contents.append(text_input)
 
-        # Updated to the active production model string
+        # Updated to the current production model
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
