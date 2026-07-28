@@ -16,3 +16,6 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Security(sec
         return user_id
     except JWTError:
         raise HTTPException(status_code=401, detail="Could not validate credentials")
+
+def get_raw_jwt(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
+    return credentials.credentials
