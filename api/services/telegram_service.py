@@ -54,7 +54,6 @@ class TelegramService:
         await cls.send_message(chat_id, "🎙️ <i>Listening and processing...</i>")
 
         async with httpx.AsyncClient() as client:
-            # 1. Get File Path from Telegram
             file_info_resp = await client.get(f"{cls.TELEGRAM_API_URL}/getFile?file_id={file_id}")
             file_path = file_info_resp.json().get("result", {}).get("file_path")
 
@@ -62,12 +61,10 @@ class TelegramService:
                 await cls.send_message(chat_id, "❌ Failed to retrieve audio file.")
                 return
 
-            # 2. Download the audio file directly into memory
             audio_url = f"{cls.FILE_API_URL}/{file_path}"
             audio_resp = await client.get(audio_url)
             audio_bytes = audio_resp.content
 
-        # 3. Process via AI
         await cls.process_natural_language(chat_id, audio_bytes=audio_bytes)
 
     @classmethod
@@ -80,6 +77,12 @@ class TelegramService:
         try:
             # AI Magic happens here
             parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
+
+            # Check if the AI verified this as an actual financial transaction
+            if not parsed_data.get("is_transaction", True):
+                await cls.send_message(chat_id,
+                                       "🤖 I can only help you track income and expenses. Try sending something like: <i>'Spent 500 on lunch today'</i>.")
+                return
 
             # Gracefully check if the amount is missing or null
             raw_amount = parsed_data.get("amount")
@@ -99,7 +102,6 @@ class TelegramService:
 
             admin_client = get_supabase_admin()
 
-            # Find primary account
             accs = admin_client.table("accounts").select("id, name").eq("user_id", user_id).is_("deleted_at",
                                                                                                 "null").limit(
                 1).execute()
@@ -111,7 +113,6 @@ class TelegramService:
             account_id = accs.data[0]["id"]
             acc_name = accs.data[0]["name"]
 
-            # Save to Database
             admin_client.table("transactions").insert({
                 "user_id": user_id,
                 "account_id": account_id,
