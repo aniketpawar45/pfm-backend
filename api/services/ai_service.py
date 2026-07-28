@@ -5,15 +5,12 @@ from google import genai
 from google.genai import types
 from api.core.config import settings
 
-# Configure Modern Gemini Client
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
-
 class AIService:
     @staticmethod
     def parse_transaction(text_input: str = None, audio_bytes: bytes = None) -> dict:
-        """
-        Parses natural language text or audio to extract transaction data using the new Google GenAI SDK.
-        """
+        # Lazy initialization: Only boots up when a message is received
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        
         ist = pytz.timezone('Asia/Kolkata')
         current_date = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -55,5 +52,5 @@ class AIService:
         try:
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             return json.loads(clean_text)
-        except json.JSONDecodeError:
-            raise ValueError(f"Failed to parse AI response into JSON: {response.text}")
+        except Exception as e:
+            raise ValueError(f"Failed to parse AI response: {str(e)}")
