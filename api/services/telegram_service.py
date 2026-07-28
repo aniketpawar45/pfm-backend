@@ -28,9 +28,9 @@ class TelegramService:
 
         # Handle Commands
         if text.startswith("/start"):
-            await cls.send_message(chat_id, "Welcome to PFM! Send a voice note or type a natural sentence like: *'I spent 400 on a shirt yesterday'*.")
+            await cls.send_message(chat_id, "Welcome to PFM! Send a voice note or type a natural sentence like: <i>'I spent 400 on a shirt yesterday'</i>.")
         elif text.startswith("/help"):
-            await cls.send_message(chat_id, "Just speak or type your expenses naturally!\nOr use commands: `/balance`, `/recent`, `/add_account`.")
+            await cls.send_message(chat_id, "Just speak or type your expenses naturally!\nOr use commands: <code>/balance</code>, <code>/recent</code>, <code>/add_account</code>.")
         elif text.startswith("/link"):
             parts = text.split(" ")
             if len(parts) > 1:
@@ -49,7 +49,7 @@ class TelegramService:
 
     @classmethod
     async def handle_voice_message(cls, chat_id: int, file_id: str):
-        await cls.send_message(chat_id, "🎙️ _Listening and processing..._")
+        await cls.send_message(chat_id, "🎙️ <i>Listening and processing...</i>")
         
         async with httpx.AsyncClient() as client:
             # 1. Get File Path from Telegram
@@ -89,7 +89,7 @@ class TelegramService:
             # Find primary account
             accs = admin_client.table("accounts").select("id, name").eq("user_id", user_id).is_("deleted_at", "null").limit(1).execute()
             if not accs.data:
-                await cls.send_message(chat_id, "No active account found. Create one first using `/add_account`.")
+                await cls.send_message(chat_id, "No active account found. Create one first using <code>/add_account</code>.")
                 return
 
             account_id = accs.data[0]["id"]
@@ -108,9 +108,9 @@ class TelegramService:
             symbol = "+" if tx_type == "income" else "-"
             await cls.send_message(
                 chat_id,
-                f"✨ **Got it!**\n"
-                f"• Type: `{tx_type.capitalize()}`\n"
-                f"• Amount: `{symbol}₹{amount:,.2f}`\n"
+                f"✨ <b>Got it!</b>\n"
+                f"• Type: <code>{tx_type.capitalize()}</code>\n"
+                f"• Amount: <code>{symbol}₹{amount:,.2f}</code>\n"
                 f"• For: {description}\n"
                 f"• Date: {date}\n"
                 f"• Account: {acc_name}"
@@ -123,7 +123,8 @@ class TelegramService:
     @classmethod
     async def send_message(cls, chat_id: int, text: str):
         async with httpx.AsyncClient() as client:
-            await client.post(f"{cls.TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+            # CHANGED: Parse mode is now HTML
+            await client.post(f"{cls.TELEGRAM_API_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
 
     @classmethod
     def link_chat_id(cls, chat_id: int, code: str):
@@ -145,13 +146,13 @@ class TelegramService:
         if not user_id: return
         admin_client = get_supabase_admin()
         accounts = admin_client.table("accounts").select("name, balance, type").eq("user_id", user_id).is_("deleted_at", "null").execute()
-        msg = "**Your Account Balances (INR):**\n\n"
+        msg = "<b>Your Account Balances (INR):</b>\n\n"
         total = 0.0
         for acc in accounts.data:
             bal = float(acc["balance"])
             total += bal
-            msg += f"• **{acc['name']}** ({acc['type']}): `₹{bal:,.2f}`\n"
-        msg += f"\n**Total Net Worth:** `₹{total:,.2f}`"
+            msg += f"• <b>{acc['name']}</b> ({acc['type']}): <code>₹{bal:,.2f}</code>\n"
+        msg += f"\n<b>Total Net Worth:</b> <code>₹{total:,.2f}</code>"
         await cls.send_message(chat_id, msg)
 
     @classmethod
@@ -160,11 +161,11 @@ class TelegramService:
         if not user_id: return
         admin_client = get_supabase_admin()
         txs = admin_client.table("transactions").select("amount, type, description, transaction_date").eq("user_id", user_id).is_("deleted_at", "null").order("transaction_date", desc=True).limit(5).execute()
-        msg = "**Last 5 Transactions:**\n\n"
+        msg = "<b>Last 5 Transactions:</b>\n\n"
         for t in txs.data:
             sign = "+" if t["type"] == "income" else "-"
             icon = "🟢" if t["type"] == "income" else "🔴"
-            msg += f"{icon} `{sign}₹{float(t['amount']):,.2f}` - {t['description'] or 'Uncategorized'}\n"
+            msg += f"{icon} <code>{sign}₹{float(t['amount']):,.2f}</code> - {t['description'] or 'Uncategorized'}\n"
         await cls.send_message(chat_id, msg)
 
     @classmethod
@@ -173,11 +174,12 @@ class TelegramService:
         if not user_id: return
         parts = text.split(" ")
         if len(parts) < 3:
-            await cls.send_message(chat_id, "Usage: `/add_account <Name> <Type> [Balance]`")
+            # CHANGED: Removed the < > brackets as they break HTML parsing
+            await cls.send_message(chat_id, "Usage: <code>/add_account Name Type [Balance]</code>")
             return
         admin_client = get_supabase_admin()
         admin_client.table("accounts").insert({"user_id": user_id, "name": parts[1], "type": parts[2].lower(), "balance": float(parts[3]) if len(parts)>3 else 0.0}).execute()
-        await cls.send_message(chat_id, f"🎉 Account **{parts[1]}** created.")
+        await cls.send_message(chat_id, f"🎉 Account <b>{parts[1]}</b> created.")
 
     @classmethod
     def _get_user_id(cls, chat_id: int) -> str | None:
