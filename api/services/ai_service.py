@@ -36,9 +36,9 @@ class AIService:
         if text_input:
             contents.append(text_input)
 
-        # Call the model using the correct name WITHOUT the 'models/' prefix
+        # Updated to the active production model string
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
