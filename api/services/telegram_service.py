@@ -63,7 +63,7 @@ class TelegramService:
                 print(f"Failed to answer callback query: {str(e)}")
 
     @classmethod
-    def build_delete_keyboard(cls, records: list, selected_ids: list, page: int, total_pages: int, query_arg: str) -> dict:
+    def build_delete_keyboard(cls, records: list, selected_ids: set, page: int, total_pages: int, query_arg: str) -> dict:
         keyboard = []
         for r in records:
             tx_id = r["id"]
@@ -124,13 +124,11 @@ class TelegramService:
     @classmethod
     async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
         try:
-            title = DBService.parse_delete_query(query_arg)[3]
-            
             if toggle_tx_id is not None:
-                records, total_records, total_pages, selected_ids = DBService.toggle_and_get_page(chat_id, toggle_tx_id, query_arg, page, 5)
-            else:
-                records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg, page, 5)[1:]
+                DBService.toggle_selection(chat_id, toggle_tx_id)
                 
+            title, records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
+            
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -298,7 +296,7 @@ class TelegramService:
                 page = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 else ""
                 
-                await cls.answer_callback_query(query_id, "Updated selection")
+                await cls.answer_callback_query(query_id, "Selection updated")
                 if message_id:
                     await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=tx_id)
                 return
