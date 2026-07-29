@@ -66,6 +66,9 @@ async def telegram_webhook(request: Request):
 
         # Handle Commands
         if text_stripped.startswith("/start"):
+            # Automatically register commands with Telegram on every /start interaction
+            TelegramService.set_bot_commands()
+
             welcome_msg = (
                 "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
                 "Your intelligent financial co-pilot for automated budgeting, debt tracking, and expense logging.\n\n"
