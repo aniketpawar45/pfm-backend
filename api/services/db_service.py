@@ -450,7 +450,7 @@ class DBService:
         elif percentage_used >= 75:
             warning_status = "warning"
 
-       return {
+        return {
             "year_month": year_month,
             "base_salary": base_salary,
             "extra_income": extra_income,
@@ -462,4 +462,3 @@ class DBService:
             "percentage_used": round(percentage_used, 1),
             "warning_status": warning_status
         }
-     
