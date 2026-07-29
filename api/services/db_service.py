@@ -31,7 +31,9 @@ class DBService:
         processed_results = []
 
         IST = timezone(timedelta(hours=5, minutes=30))
-        current_month_str = datetime.now(IST).strftime("%Y-%m")
+        now_ist = datetime.now(IST)
+        current_date_str = now_ist.date().isoformat()
+        current_month_str = now_ist.strftime("%Y-%m")
 
         for item in items:
             if not item.get("is_transaction", True) or item.get("amount") is None:
@@ -41,7 +43,15 @@ class DBService:
             desc = item.get("description") or "Miscellaneous"
             amt = float(item.get("amount"))
             cat = item.get("category") or "Miscellaneous"
-            t_date = item.get("date") or datetime.now(IST).date().isoformat()
+            
+            # Sanitize Date from AI (handle "unknown", "today", invalid strings, etc.)
+            raw_date = item.get("date")
+            t_date = current_date_str
+            if raw_date and isinstance(raw_date, str):
+                raw_date_clean = raw_date.strip().lower()
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', raw_date_clean):
+                    t_date = raw_date_clean
+
             is_emi = item.get("is_emi_payment", False)
             lender_name = (item.get("lender_name") or "").strip().lower()
 
