@@ -19,15 +19,18 @@ class AIService:
         
         prompt = f"""
         You are a precise financial data extraction assistant. Analyze the user input and extract financial transaction details.
-        The input can be an expense, an income/earning (e.g., "received 10000 extra", "got a bonus of 5000", "earned from freelance"), or a transfer.
+        The input can be an expense, an income/earning, a transfer, or an EMI / loan repayment (e.g., "paid 24k emi to Sushma", "sent 10000 to bank loan").
+        If it is an EMI or loan payment, set "is_emi_payment" to true and extract the "lender_name".
         If there are multiple transactions in the input, return a JSON array of objects. If single, return a single JSON object.
         Each object must follow this strict schema:
         {{
             "is_transaction": true/false,
+            "is_emi_payment": true/false,
+            "lender_name": "Name of lender if EMI payment, else null",
             "description": "Short clear description",
             "amount": 0.00,
             "type": "expense" or "income" or "transfer",
-            "category": "Food" or "Extra Income" or "Bonus" or "Salary" or "Freelance" etc.,
+            "category": "Food" or "Loans & EMIs" or "Extra Income" etc.,
             "date": "YYYY-MM-DD"
         }}
         Input: "{content_to_parse}"
