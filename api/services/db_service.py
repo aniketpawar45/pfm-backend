@@ -108,33 +108,42 @@ class DBService:
         return "all", None, None, "Recent Transactions"
 
     @classmethod
-    def get_delete_view_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5, toggle_tx_id: int | None = None) -> tuple[str, list, int, int, list, int, float]:
+    def get_delete_page_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int, list]:
         supabase = cls.get_client()
-        mode, start_date, end_date, default_title = cls.parse_delete_query(query_arg)
+        mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         
-        # Executes toggle, pagination, counts, selections, and total sums in ONE single database roundtrip
-        response = supabase.rpc("get_delete_view", {
-            "p_chat_id": chat_id,
-            "p_start_date": start_date if mode == "range" else None,
-            "p_end_date": end_date if mode == "range" else None,
-            "p_page": page,
-            "p_page_size": page_size,
-            "p_toggle_id": toggle_tx_id
-        }).execute()
-        
-        res_data = response.data or {}
-        title = res_data.get("title", default_title)
+        query = supabase.table("transactions").select("*", count="exact").eq("chat_id", chat_id)
         if mode == "range":
-            title = default_title
+            query = query.gte("date", start_date).lte("date", end_date)
             
-        records = res_data.get("records", []) or []
-        total_records = res_data.get("total_records", 0)
-        total_pages = res_data.get("total_pages", 1)
-        selected_ids = res_data.get("selected_ids", []) or []
-        selected_count = res_data.get("selected_count", 0) or 0
-        total_amt = float(res_data.get("total_amount", 0.0) or 0.0)
+        response = query.order("date", desc=True).order("id", desc=True).execute()
+        all_records = response.data or []
         
-        return title, records, total_records, total_pages, selected_ids, selected_count, total_amt
+        total_records = len(all_records)
+        total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
+        if page >= total_pages and total_pages > 0:
+            page = max(0, total_pages - 1)
+            
+        start_idx = page * page_size
+        paginated_records = all_records[start_idx:start_idx + page_size]
+        
+        # Get active selections quickly
+        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
+        selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
+        
+        return title, paginated_records, total_records, total_pages, selected_ids
+
+    @classmethod
+    def toggle_selection(cls, chat_id: int, tx_id: int) -> list:
+        supabase = cls.get_client()
+        existing = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).eq("transaction_id", tx_id).execute()
+        if existing.data:
+            supabase.table("user_selections").delete().eq("chat_id", chat_id).eq("transaction_id", tx_id).execute()
+        else:
+            supabase.table("user_selections").insert({"chat_id": chat_id, "transaction_id": tx_id}).execute()
+            
+        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
+        return [row["transaction_id"] for row in (sel_resp.data or [])]
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
