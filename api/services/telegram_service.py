@@ -1,399 +1,293 @@
 import os
-import io
-import csv
-import httpx
+import tempfile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from datetime import datetime, timezone, timedelta
-from api.core.config import settings
-from api.services.ai_service import AIService
+from fastapi import APIRouter, Request, HTTPException
+from api.services.telegram_service import TelegramService
 from api.services.db_service import DBService
+from api.services.ai_service import AIService
 
-class TelegramService:
-    @classmethod
-    def get_api_url(cls) -> str:
-        token = getattr(settings, "TELEGRAM_BOT_TOKEN", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
-        token = str(token).strip(" '\"")
-        if not token:
-            raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing or empty.")
-        return f"https://api.telegram.org/bot{token}"
+router = APIRouter()
 
-    @classmethod
-    async def send_message(cls, chat_id: int, text: str, reply_markup: dict = None) -> int | None:
-        url = f"{cls.get_api_url()}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(url, json=payload)
-                data = response.json()
-                if data.get("ok"):
-                    return data["result"]["message_id"]
-            except Exception as e:
-                print(f"Failed to send Telegram message: {str(e)}")
-        return None
-
-    @classmethod
-    async def edit_message(cls, chat_id: int, message_id: int, text: str, reply_markup: dict = None):
-        if not message_id:
-            return
-        url = f"{cls.get_api_url()}/editMessageText"
-        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        else:
-            payload["reply_markup"] = {"inline_keyboard": []}
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(url, json=payload)
-            except Exception as e:
-                print(f"Failed to edit Telegram message: {str(e)}")
-
-    @classmethod
-    async def answer_callback_query(cls, callback_query_id: str, text: str = ""):
-        url = f"{cls.get_api_url()}/answerCallbackQuery"
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(url, json={"callback_query_id": callback_query_id, "text": text, "cache_time": 0})
-            except Exception as e:
-                print(f"Failed to answer callback query: {str(e)}")
-
-    @classmethod
-    def build_delete_keyboard(cls, records: list, selected_ids: set, page: int, total_pages: int, query_arg: str) -> dict:
-        keyboard = []
-        for r in records:
-            tx_id = r["id"]
-            is_selected = tx_id in selected_ids
-            icon = "🟢" if is_selected else "⚪"
-            desc = r.get("description") or "Misc"
-            amt = float(r.get("amount", 0))
-            date = r.get("date")
-            btn_text = f"{icon} {date} | {desc} — ₹{amt:,.2f}"
-            keyboard.append([{"text": btn_text, "callback_data": f"del_t:{tx_id}:{page}:{query_arg}"}])
-            
-        nav_row = []
-        if page > 0:
-            nav_row.append({"text": "⬅️ Prev", "callback_data": f"del_pg:{page - 1}:{query_arg}"})
-        nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": "del_noop"})
-        if page < total_pages - 1:
-            nav_row.append({"text": "Next ➡️", "callback_data": f"del_pg:{page + 1}:{query_arg}"})
-        keyboard.append(nav_row)
+@router.post("/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        body = await request.json()
         
-        count = len(selected_ids)
-        action_row = [
-            {"text": f"🗑️ Confirm Delete ({count})", "callback_data": "del_confirm"},
-            {"text": "❌ Cancel", "callback_data": "del_cancel"}
-        ]
-        keyboard.append(action_row)
-        return {"inline_keyboard": keyboard}
-
-    @classmethod
-    async def send_delete_menu(cls, chat_id: int, query_arg: str = "", page: int = 0):
-        try:
-            if page == 0:
+        # Handle Callback Queries (Inline Keyboards for Delete / Pagination)
+        if "callback_query" in body:
+            callback = body["callback_query"]
+            chat_id = callback["message"]["chat"]["id"]
+            message_id = callback["message"]["message_id"]
+            data = callback.get("data", "")
+            
+            if data.startswith("del_page_"):
+                parts = data.split("_")
+                query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
+                page = int(parts[-1])
+                title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg, page=page)
+                keyboard = TelegramService.build_delete_keyboard(records, total_pages, page, query_arg, selected_ids)
+                TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
+                
+            elif data.startswith("del_toggle_"):
+                parts = data.split("_")
+                tx_id = int(parts[2])
+                query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
+                page = int(parts[4]) if len(parts) > 4 else 0
+                title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg, page=page, toggle_tx_id=tx_id)
+                keyboard = TelegramService.build_delete_keyboard(records, total_pages, page, query_arg, selected_ids)
+                TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
+                
+            elif data.startswith("del_confirm_"):
+                query_arg = data.split("_")[-1]
+                if query_arg == "None":
+                    query_arg = ""
+                deleted_count = DBService.confirm_and_delete(chat_id)
+                TelegramService.edit_message(chat_id, message_id, f"✅ Successfully deleted {deleted_count} transaction(s).")
+                
+            elif data == "del_cancel":
                 DBService.clear_user_selections(chat_id)
-            title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg=query_arg, page=page, page_size=5)
-            if total_records == 0:
-                await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found.")
-                return
-            text = (
-                f"🗑️ <b>Delete Manager — {title}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 <b>Selected Items:</b> {len(selected_ids)}\n"
-                f"⚪ <b>Total Records:</b> {total_records}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>Page {page + 1} of {total_pages}</i>"
-            )
-            markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
-            await cls.send_message(chat_id, text, reply_markup=markup)
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+                TelegramService.edit_message(chat_id, message_id, "❌ Deletion cancelled.")
+                
+            return {"ok": True}
 
-    @classmethod
-    async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
-        try:
-            title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(
-                chat_id, query_arg=query_arg, page=page, page_size=5, toggle_tx_id=toggle_tx_id
-            )
-            text = (
-                f"🗑️ <b>Delete Manager — {title}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 <b>Selected Items:</b> {len(selected_ids)}\n"
-                f"⚪ <b>Total Records:</b> {total_records}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>Page {page + 1} of {total_pages}</i>"
-            )
-            markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
-            await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
-        except Exception as e:
-            print(f"Failed to update delete menu: {str(e)}")
+        if "message" not in body:
+            return {"ok": True}
 
-    @classmethod
-    async def send_summary_report(cls, chat_id: int, query_arg: str = ""):
-        try:
-            summary = DBService.get_summary(chat_id, query_arg=query_arg)
-            if summary["count"] == 0:
-                await cls.send_message(chat_id, f"📊 <b>{summary['title']}</b>\n\nNo transactions logged for this period!")
-                return
-            cat_breakdown = "\n".join([f"  • {cat}: ₹{amt:,.2f}" for cat, amt in summary["categories"].items()]) or "  • None"
-            report = (
-                f"📊 <b>{summary['title']}</b>\n\n"
-                f"📥 <b>Total Income:</b> ₹{summary['total_income']:,.2f}\n"
-                f"📤 <b>Total Expenses:</b> ₹{summary['total_expense']:,.2f}\n"
-                f"🔄 <b>Total Transfers:</b> ₹{summary['total_transfer']:,.2f}\n"
-                f"💰 <b>Net Balance:</b> ₹{summary['net_balance']:,.2f}\n\n"
-                f"🏷️ <b>Expense Categories:</b>\n{cat_breakdown}\n\n"
-                f"<i>Total records analyzed: {summary['count']}</i>"
+        message = body["message"]
+        chat_id = message["chat"]["id"]
+        text = message.get("text")
+
+        if not text:
+            return {"ok": True}
+
+        text_stripped = text.strip()
+
+        # Handle Commands
+        if text_stripped.startswith("/start"):
+            welcome_msg = (
+                "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
+                "I help you manage debts, automate budget guardrails, and track expenses effortlessly.\n\n"
+                "**Quick Start Commands:**\n"
+                "• `/setsalary [amount]` - Set your baseline monthly salary\n"
+                "• `/budget` - View your Safe House Budget & guardrails\n"
+                "• `/addloan Name | bank/family | high/low | Principal | Interest% | Months` - Add a loan\n"
+                "• `/loans` - View active liabilities & amortization status\n"
+                "• `/summary` - View monthly financial breakdown\n"
+                "• `/chart` - View expense category pie chart\n"
+                "• `/export` - Download CSV transaction report\n"
+                "• `/delete` - Manage and delete transactions\n\n"
+                "Or simply type naturally (e.g., *'Paid 500 for lunch'* or *'I paid 10k emi to ICICI'*)."
             )
-            await cls.send_message(chat_id, report)
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+            TelegramService.send_message(chat_id, welcome_msg)
 
-    @classmethod
-    async def send_chart_report(cls, chat_id: int, query_arg: str = ""):
-        try:
-            title, categories = DBService.get_category_data_for_chart(chat_id, query_arg=query_arg)
-            if not categories:
-                await cls.send_message(chat_id, f"📊 <b>{title}</b>\n\nNo expense records found!")
-                return
-            labels = list(categories.keys())
-            amounts = list(categories.values())
-            plt.figure(figsize=(7, 7))
-            plt.style.use('dark_background')
-            colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0', '#ffb3e6']
-            wedges, texts, autotexts = plt.pie(
-                amounts, labels=labels, autopct='%1.1f%%', startangle=140,
-                colors=colors[:len(labels)], wedgeprops=dict(width=0.4, edgecolor='w')
+        elif text_stripped.startswith("/setsalary"):
+            parts = text_stripped.split()
+            if len(parts) < 2:
+                TelegramService.send_message(chat_id, "⚠️ Usage: `/setsalary [amount]` (e.g., `/setsalary 75000`)")
+            else:
+                try:
+                    amount = float(parts[1])
+                    DBService.set_user_salary(chat_id, amount)
+                    TelegramService.send_message(chat_id, f"✅ Base monthly salary successfully updated to **{amount:,.2f}**.")
+                except ValueError:
+                    TelegramService.send_message(chat_id, "⚠️ Invalid amount format. Please provide a valid number.")
+
+        elif text_stripped.startswith("/budget"):
+            parts = text_stripped.split()
+            year_month = parts[1] if len(parts) > 1 else None
+            if not year_month:
+                from datetime import datetime, timezone, timedelta
+                IST = timezone(timedelta(hours=5, minutes=30))
+                year_month = datetime.now(IST).strftime("%Y-%m")
+            
+            b_data = DBService.get_monthly_budget_guardrail(chat_id, year_month)
+            
+            status_emoji = {"safe": "🟢", "warning": "🟡", "critical": "🟠", "breached": "🔴"}.get(b_data["warning_status"], "🟢")
+            
+            msg = (
+                f"📊 **Safe House Budget ({b_data['year_month']})**\n\n"
+                f"• **Base Salary:** {b_data['base_salary']:,.2f}\n"
+                f"• **Extra Income:** {b_data['extra_income']:,.2f}\n"
+                f"• **Total Inflows:** {b_data['total_inflow']:,.2f}\n"
+                f"• **Mandatory EMIs:** {b_data['total_emis']:,.2f}\n"
+                f"-----------------------------------\n"
+                f"• **Safe House Budget:** {b_data['safe_house_budget']:,.2f}\n"
+                f"• **Actual Spent:** {b_data['actual_house_spent']:,.2f}\n"
+                f"• **Utilization:** {b_data['percentage_used']}% {status_emoji}\n"
+                f"• **Status:** {b_data['warning_status'].upper()}"
             )
-            plt.setp(autotexts, size=10, weight="bold")
-            plt.setp(texts, size=11)
-            plt.title(f"Expense Breakdown\n{title}", fontsize=14, pad=20, weight='bold', color='white')
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', transparent=True)
-            buf.seek(0)
-            plt.close()
-            url = f"{cls.get_api_url()}/sendPhoto"
-            async with httpx.AsyncClient() as client:
-                files = {"photo": ("chart.png", buf.read(), "image/png")}
-                data = {"chat_id": chat_id, "caption": f"📊 <b>Visual Breakdown — {title}</b>", "parse_mode": "HTML"}
-                await client.post(url, data=data, files=files)
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+            TelegramService.send_message(chat_id, msg)
 
-    @classmethod
-    async def send_csv_export(cls, chat_id: int, query_arg: str = ""):
-        try:
-            filename, title, records = DBService.get_transactions_for_export(chat_id, query_arg=query_arg)
-            if not records:
-                await cls.send_message(chat_id, "📁 No transactions found for export.")
-                return
-            output = io.StringIO()
-            writer = csv.writer(output)
-            writer.writerow(["ID", "Date", "Type", "Category", "Description", "Amount (INR)", "Chat ID"])
-            for r in records:
-                writer.writerow([r.get("id"), r.get("date"), r.get("type"), r.get("category"), r.get("description"), r.get("amount"), r.get("chat_id")])
-            buf = io.BytesIO(output.getvalue().encode('utf-8'))
-            buf.seek(0)
-            url = f"{cls.get_api_url()}/sendDocument"
-            async with httpx.AsyncClient() as client:
-                files = {"document": (filename, buf.read(), "text/csv")}
-                data = {"chat_id": chat_id, "caption": f"📁 <b>CSV Export</b>\n{title}", "parse_mode": "HTML"}
-                await client.post(url, data=data, files=files)
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+        elif text_stripped.startswith("/addloan"):
+            content = text_stripped.replace("/addloan", "").strip()
+            parts = [p.strip() for p in content.split("|")]
+            if len(parts) < 6:
+                TelegramService.send_message(
+                    chat_id,
+                    "⚠️ **Format error:** Missing parameters.\n\n"
+                    "Use: `/addloan Name | bank/family | high/low | Principal | Interest% | Months`\n"
+                    "Example: `/addloan Sushma | family | high | 150000 | 0 | 6`"
+                )
+            else:
+                try:
+                    name = parts[0]
+                    lender_type = parts[1].lower()
+                    priority = parts[2].lower()
+                    principal = float(parts[3])
+                    interest_rate = float(parts[4])
+                    tenure_months = int(parts[5])
 
-    @classmethod
-    async def send_loans_report(cls, chat_id: int):
-        try:
+                    loan = DBService.add_loan_with_schedule(
+                        chat_id=chat_id,
+                        name=name,
+                        lender_type=lender_type,
+                        priority=priority,
+                        principal=principal,
+                        interest_rate=interest_rate,
+                        tenure_months=tenure_months
+                    )
+                    TelegramService.send_message(
+                        chat_id,
+                        f"✅ **Loan Added Successfully!**\n\n"
+                        f"• **Name:** {loan['name']}\n"
+                        f"• **Principal:** {loan['principal']:,.2f}\n"
+                        f"• **Monthly EMI:** {loan['emi_amount']:,.2f}\n"
+                        f"• **Tenure:** {loan['tenure_months']} months"
+                    )
+                except Exception as e:
+                    TelegramService.send_message(chat_id, f"⚠️ Error adding loan: {str(e)}")
+
+        elif text_stripped.startswith("/loans"):
             loans = DBService.get_user_loans(chat_id)
             if not loans:
-                await cls.send_message(chat_id, "🏦 <b>Loan Manager</b>\n\nNo loans logged.\n<i>Add with: /addloan Name | bank/family | high/low | Principal | Interest% | TenureMonths</i>")
-                return
-            
-            lines = ["🏦 <b>Active Loans & Liabilities</b>\n━━━━━━━━━━━━━━━━━━━"]
-            for l in loans:
-                paid_pct = ((float(l["principal"]) - float(l["remaining_amount"])) / float(l["principal"])) * 100
-                lines.append(
-                    f"📌 <b>{l['name']}</b> (ID: {l['id']})\n"
-                    f"  • Type: {l['lender_type'].upper()} | Priority: <b>{l['priority'].upper()}</b>\n"
-                    f"  • Remaining: ₹{float(l['remaining_amount']):,.2f} / ₹{float(l['principal']):,.2f} ({paid_pct:.1f}% paid)\n"
-                    f"  • Monthly EMI: ₹{float(l['emi_amount']):,.2f}\n"
-                    f"  • Status: <i>{l['status'].capitalize()}</i>\n"
-                )
-            lines.append("<i>Simply chat: \"Paid 24k EMI to Sushma\" to record payments automatically!</i>")
-            await cls.send_message(chat_id, "\n".join(lines))
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+                TelegramService.send_message(chat_id, "ℹ️ You have no active or recorded loans.")
+            else:
+                msg = "📋 **Your Loan Portfolio:**\n\n"
+                for l in loans:
+                    rem = float(l['remaining_amount'])
+                    prin = float(l['principal'])
+                    paid_pct = ((prin - rem) / prin * 100) if prin > 0 else 0
+                    msg += (
+                        f"• **{l['name']}** ({l['lender_type'].capitalize()})\n"
+                        f"  Remaining: {rem:,.2f} / {prin:,.2f} ({paid_pct:.1f}% paid)\n"
+                        f"  EMI: {float(l['emi_amount']):,.2f} | Priority: {l['priority'].upper()}\n\n"
+                    )
+                TelegramService.send_message(chat_id, msg)
 
-    @classmethod
-    async def send_budget_guardrail_report(cls, chat_id: int, year_month: str = None):
-        try:
-            target_month = year_month or datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m")
-            b = DBService.get_monthly_budget_guardrail(chat_id, target_month)
+        elif text_stripped.startswith("/summary"):
+            parts = text_stripped.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            summary = DBService.get_summary(chat_id, query_arg)
             
-            status_emoji = {"safe": "🟢", "warning": "🟡", "critical": "🟠", "breached": "🔴"}.get(b["warning_status"], "🟢")
-            
-            report = (
-                f"🛡️ <b>House Budget Guardrail ({target_month})</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"💵 Base Salary: ₹{b['base_salary']:,.2f}\n"
-                f"➕ Extra Incomes: ₹{b['extra_income']:,.2f}\n"
-                f"📥 Total Monthly Inflow: ₹{b['total_inflow']:,.2f}\n"
-                f"📤 Mandatory EMIs: ₹{b['total_emis']:,.2f}\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🏠 <b>Safe House Budget:</b> ₹{b['safe_house_budget']:,.2f}\n"
-                f"💸 <b>Actual House Spent:</b> ₹{b['actual_house_spent']:,.2f}\n"
-                f"📊 <b>Budget Utilized:</b> {b['percentage_used']}% {status_emoji}\n"
+            msg = (
+                f"📈 **{summary['title']}**\n\n"
+                f"• **Total Income:** {summary['total_income']:,.2f}\n"
+                f"• **Total Expenses:** {summary['total_expense']:,.2f}\n"
+                f"• **Net Balance:** {summary['net_balance']:,.2f}\n"
+                f"• **Transactions Logged:** {summary['count']}\n\n"
+                f"🏷️ **Category Breakdown:**\n"
             )
-            await cls.send_message(chat_id, report)
-        except Exception as e:
-            await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
+            for cat, amt in summary["categories"].items():
+                msg += f"• {cat}: {amt:,.2f}\n"
+            TelegramService.send_message(chat_id, msg)
 
-    @classmethod
-    async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
-        msg_id = await cls.send_message(chat_id, "🔄 Analyzing transaction & checking guardrails...")
-        try:
-            parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
-            saved_records = DBService.save_transactions(chat_id, parsed_data)
-
-            current_month = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m")
-            budget_info = DBService.get_monthly_budget_guardrail(chat_id, current_month)
-            warning_suffix = ""
-            if budget_info["warning_status"] in ["warning", "critical", "breached"]:
-                warning_suffix = f"\n\n⚠️ <b>BUDGET ALERT:</b> You have utilized <b>{budget_info['percentage_used']}%</b> of your safe house budget!"
-
-            if not saved_records:
-                await cls.edit_message(chat_id, msg_id, "🤖 No valid transactions found.")
-                return
-
-            # Check if any processed record was an automated EMI payment match
-            auto_emi_record = next((r for r in saved_records if r.get("is_auto_emi")), None)
-            if auto_emi_record:
-                await cls.edit_message(
-                    chat_id, msg_id,
-                    f"💸 <b>Auto-Matched & Paid EMI!</b>\n\n"
-                    f"📌 Loan: {auto_emi_record['loan_name']} ({auto_emi_record['installment_month']})\n"
-                    f"💳 Paid: ₹{float(auto_emi_record['amount']):,.2f}\n"
-                    f"📉 Remaining Principal: ₹{auto_emi_record['remaining_principal']:,.2f}\n"
-                    f"Status: <i>{auto_emi_record['loan_status'].capitalize()}</i>{warning_suffix}"
-                )
-                return
-
-            if isinstance(parsed_data, list):
-                list_str = "\n".join([f"• <b>{r.get('description')}</b> ({r.get('type')}): ₹{r.get('amount'):,.2f}" for r in saved_records])
-                await cls.edit_message(chat_id, msg_id, f"✨ <b>Bulk Items Logged ({len(saved_records)})</b>\n\n{list_str}{warning_suffix}")
-                return
-
-            if isinstance(parsed_data, dict):
-                record = saved_records[0]
-                icon = "📥" if record.get("type") == "income" else "✨"
-                await cls.edit_message(chat_id, msg_id, f"{icon} <b>Logged Successfully!</b>\n\n🔹 {record.get('description')}: ₹{record.get('amount'):,.2f} ({record.get('category')}){warning_suffix}")
-        except Exception as e:
-            if msg_id:
-                await cls.edit_message(chat_id, msg_id, f"❌ Error: <code>{str(e)}</code>")
-
-    @classmethod
-    async def process_update(cls, update: dict):
-        callback_query = update.get("callback_query")
-        if callback_query:
-            query_id = callback_query["id"]
-            data = callback_query.get("data", "")
-            message = callback_query.get("message")
-            chat_id = message["chat"]["id"] if message else callback_query["from"]["id"]
-            message_id = message["message_id"] if message else None
-
-            if data == "del_noop":
-                await cls.answer_callback_query(query_id, "")
-                return
-            if data.startswith("del_t:"):
-                parts = data.split(":", 3)
-                await cls.answer_callback_query(query_id, "")
-                if message_id:
-                    await cls.update_delete_menu(chat_id, message_id, query_arg=parts[3], page=int(parts[2]), toggle_tx_id=int(parts[1]))
-                return
-            if data.startswith("del_pg:"):
-                parts = data.split(":", 2)
-                await cls.answer_callback_query(query_id, "")
-                if message_id:
-                    await cls.update_delete_menu(chat_id, message_id, query_arg=parts[2], page=int(parts[1]), toggle_tx_id=None)
-                return
-            if data == "del_confirm":
-                cnt = DBService.confirm_and_delete(chat_id)
-                await cls.answer_callback_query(query_id, f"Deleted {cnt} entries")
-                if message_id:
-                    await cls.edit_message(chat_id, message_id, f"🗑️ Successfully deleted {cnt} entries.")
-                return
-            if data == "del_cancel":
-                DBService.clear_user_selections(chat_id)
-                await cls.answer_callback_query(query_id, "Cancelled")
-                if message_id:
-                    await cls.edit_message(chat_id, message_id, "❌ Deletion cancelled.")
-                return
-            return
-
-        message = update.get("message") or update.get("edited_message")
-        if not message:
-            return
-
-        chat_id = message["chat"]["id"]
-        text = message.get("text", "").strip()
-        text_lower = text.lower()
-
-        if text_lower.startswith("/delete") or text_lower.startswith("/remove"):
-            parts = text.split(maxsplit=1)
-            await cls.send_delete_menu(chat_id, query_arg=parts[1] if len(parts) > 1 else "", page=0)
-            return
-
-        if text_lower.startswith("/summary") or text_lower.startswith("/report"):
-            parts = text.split(maxsplit=1)
-            await cls.send_summary_report(chat_id, query_arg=parts[1] if len(parts) > 1 else "")
-            return
-
-        if text_lower.startswith("/chart") or text_lower.startswith("/graph"):
-            parts = text.split(maxsplit=1)
-            await cls.send_chart_report(chat_id, query_arg=parts[1] if len(parts) > 1 else "")
-            return
-
-        if text_lower.startswith("/export") or text_lower.startswith("/csv"):
-            parts = text.split(maxsplit=1)
-            await cls.send_csv_export(chat_id, query_arg=parts[1] if len(parts) > 1 else "")
-            return
-
-        if text_lower.startswith("/loans") or text_lower.startswith("/loan"):
-            await cls.send_loans_report(chat_id)
-            return
-
-        if text_lower.startswith("/setsalary"):
-            try:
-                salary = float(text.split()[1])
-                DBService.set_user_salary(chat_id, salary)
-                await cls.send_message(chat_id, f"✅ Base salary configured to ₹{salary:,.2f}")
-            except Exception:
-                await cls.send_message(chat_id, "⚠️ Usage: <code>/setsalary [amount]</code>")
-            return
-
-        if text_lower.startswith("/budget"):
-            parts = text.split(maxsplit=1)
-            await cls.send_budget_guardrail_report(chat_id, year_month=parts[1].strip() if len(parts) > 1 else None)
-            return
-
-        if text_lower.startswith("/addloan"):
-            try:
-                parts = text.split(maxsplit=1)[1].split("|")
-                name = parts[0].strip()
-                l_type = parts[1].strip().lower()
-                priority = parts[2].strip().lower()
-                principal = float(parts[3].strip())
-                rate = float(parts[4].strip())
-                tenure = int(parts[5].strip())
+        elif text_stripped.startswith("/chart"):
+            parts = text_stripped.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            title, categories = DBService.get_category_data_for_chart(chat_id, query_arg)
+            
+            if not categories:
+                TelegramService.send_message(chat_id, "ℹ️ No expense data available to generate chart for this period.")
+            else:
+                fig, ax = plt.subplots(figsize=(8, 6))
+                fig.patch.set_facecolor('#1e1e1e')
+                ax.set_facecolor('#1e1e1e')
                 
-                loan = DBService.add_loan_with_schedule(chat_id, name, l_type, priority, principal, rate, tenure)
-                await cls.send_message(chat_id, f"✅ <b>Loan Added Successfully!</b>\n\n📌 {loan['name']}\n💳 EMI: ₹{loan['emi_amount']:,.2f}/month")
-            except Exception as e:
-                await cls.send_message(chat_id, f"⚠️ Format error: <code>{str(e)}</code>\nUse: <code>/addloan Name | bank/family | high/low | Principal | Interest% | Months</code>")
-            return
+                labels = list(categories.keys())
+                sizes = list(categories.values())
+                colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99','#c2c2f0','#ffb3e6','#c4e1ff']
+                
+                wedges, texts, autotexts = ax.pie(
+                    sizes, labels=labels, autopct='%1.1f%%', startangle=140,
+                    colors=colors[:len(labels)], textprops=dict(color="white")
+                )
+                plt.setp(autotexts, size=9, weight="bold")
+                plt.setp(texts, size=10)
+                ax.set_title(f"Expense Distribution - {title}", color="white", fontsize=14, pad=20)
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                    plt.savefig(tmp.name, format='png', bbox_inches='tight', facecolor=fig.get_facecolor(), edgecolor='none')
+                    tmp_path = tmp.name
+                plt.close(fig)
+                
+                TelegramService.send_photo(chat_id, tmp_path, caption=f"📊 Expense Chart: {title}")
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
 
-        if text:
-            await cls.process_natural_language(chat_id, text_input=text)
+        elif text_stripped.startswith("/export"):
+            parts = text_stripped.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            filename, title, records = DBService.get_transactions_for_export(chat_id, query_arg)
+            
+            if not records:
+                TelegramService.send_message(chat_id, "ℹ️ No transactions found to export.")
+            else:
+                import csv
+                import io
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(["ID", "Date", "Type", "Category", "Description", "Amount"])
+                for r in records:
+                    writer.writerow([r.get("id"), r.get("date"), r.get("type"), r.get("category"), r.get("description"), r.get("amount")])
+                
+                csv_bytes = output.getvalue().encode('utf-8')
+                TelegramService.send_document(chat_id, csv_bytes, filename, caption=f"📁 Transaction Statement: {title}")
+
+        elif text_stripped.startswith("/delete"):
+            parts = text_stripped.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg, page=0)
+            
+            if not records:
+                TelegramService.send_message(chat_id, f"ℹ️ No transactions found for '{title}'.")
+            else:
+                keyboard = TelegramService.build_delete_keyboard(records, total_pages, 0, query_arg, selected_ids)
+                TelegramService.send_message(chat_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
+
+        else:
+            # Natural Language Processing via AIService & DBService
+            parsed = AIService.parse_transaction(text_stripped)
+            if not parsed or not parsed.get("is_transaction", True):
+                TelegramService.send_message(chat_id, "🤖 I didn't quite catch that. You can log expenses, extra income, or pay EMIs naturally!")
+            else:
+                results = DBService.save_transactions(chat_id, parsed)
+                for res in results:
+                    if res.get("is_auto_emi"):
+                        TelegramService.send_message(
+                            chat_id,
+                            f"✅ **EMI Auto-Matched & Paid!**\n\n"
+                            f"• **Loan:** {res.get('loan_name')}\n"
+                            f"• **Installment:** {res.get('installment_month')}\n"
+                            f"• **Amount:** {float(res.get('amount', 0)):,.2f}\n"
+                            f"• **Remaining Principal:** {float(res.get('remaining_principal', 0)):,.2f}\n"
+                            f"• **Status:** {res.get('loan_status').upper()}"
+                        )
+                    else:
+                        t_type = res.get("type", "expense").capitalize()
+                        TelegramService.send_message(
+                            chat_id,
+                            f"✅ **{t_type} Logged Successfully!**\n\n"
+                            f"• **Description:** {res.get('description')}\n"
+                            f"• **Category:** {res.get('category')}\n"
+                            f"• **Amount:** {float(res.get('amount', 0)):,.2f}\n"
+                            f"• **Date:** {res.get('date')}"
+                        )
+
+        return {"ok": True}
+    except Exception as e:
+        print(f"Webhook Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
