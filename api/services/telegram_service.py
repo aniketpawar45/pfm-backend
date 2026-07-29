@@ -222,7 +222,7 @@ class TelegramService:
                     f"  • Monthly EMI: ₹{float(l['emi_amount']):,.2f}\n"
                     f"  • Status: <i>{l['status'].capitalize()}</i>\n"
                 )
-            lines.append("<i>Pay EMI: /payemi [loan_id] [YYYY-MM] (e.g. /payemi 1 2026-07)</i>")
+            lines.append("<i>Simply chat: \"Paid 24k EMI to Sushma\" to record payments automatically!</i>")
             await cls.send_message(chat_id, "\n".join(lines))
         except Exception as e:
             await cls.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>")
@@ -264,18 +264,29 @@ class TelegramService:
             if budget_info["warning_status"] in ["warning", "critical", "breached"]:
                 warning_suffix = f"\n\n⚠️ <b>BUDGET ALERT:</b> You have utilized <b>{budget_info['percentage_used']}%</b> of your safe house budget!"
 
+            if not saved_records:
+                await cls.edit_message(chat_id, msg_id, "🤖 No valid transactions found.")
+                return
+
+            # Check if any processed record was an automated EMI payment match
+            auto_emi_record = next((r for r in saved_records if r.get("is_auto_emi")), None)
+            if auto_emi_record:
+                await cls.edit_message(
+                    chat_id, msg_id,
+                    f"💸 <b>Auto-Matched & Paid EMI!</b>\n\n"
+                    f"📌 Loan: {auto_emi_record['loan_name']} ({auto_emi_record['installment_month']})\n"
+                    f"💳 Paid: ₹{float(auto_emi_record['amount']):,.2f}\n"
+                    f"📉 Remaining Principal: ₹{auto_emi_record['remaining_principal']:,.2f}\n"
+                    f"Status: <i>{auto_emi_record['loan_status'].capitalize()}</i>{warning_suffix}"
+                )
+                return
+
             if isinstance(parsed_data, list):
-                if not saved_records:
-                    await cls.edit_message(chat_id, msg_id, "🤖 No valid transactions found.")
-                    return
                 list_str = "\n".join([f"• <b>{r.get('description')}</b> ({r.get('type')}): ₹{r.get('amount'):,.2f}" for r in saved_records])
                 await cls.edit_message(chat_id, msg_id, f"✨ <b>Bulk Items Logged ({len(saved_records)})</b>\n\n{list_str}{warning_suffix}")
                 return
 
             if isinstance(parsed_data, dict):
-                if not parsed_data.get("is_transaction", True) or not saved_records:
-                    await cls.edit_message(chat_id, msg_id, "🤖 Send me expenses or commands to manage your finance.")
-                    return
                 record = saved_records[0]
                 icon = "📥" if record.get("type") == "income" else "✨"
                 await cls.edit_message(chat_id, msg_id, f"{icon} <b>Logged Successfully!</b>\n\n🔹 {record.get('description')}: ₹{record.get('amount'):,.2f} ({record.get('category')}){warning_suffix}")
@@ -382,17 +393,6 @@ class TelegramService:
                 await cls.send_message(chat_id, f"✅ <b>Loan Added Successfully!</b>\n\n📌 {loan['name']}\n💳 EMI: ₹{loan['emi_amount']:,.2f}/month")
             except Exception as e:
                 await cls.send_message(chat_id, f"⚠️ Format error: <code>{str(e)}</code>\nUse: <code>/addloan Name | bank/family | high/low | Principal | Interest% | Months</code>")
-            return
-
-        if text_lower.startswith("/payemi"):
-            try:
-                parts = text.split()
-                loan_id = int(parts[1])
-                inst_month = parts[2]
-                res = DBService.pay_loan_installment_by_month(chat_id, loan_id, inst_month)
-                await cls.send_message(chat_id, f"💸 <b>EMI Paid & Logged!</b>\n\n📌 {res['loan_name']} ({res['installment_month']})\n💳 Paid: ₹{res['emi_paid']:,.2f}\n📉 Remaining: ₹{res['remaining_principal']:,.2f}")
-            except Exception as e:
-                await cls.send_message(chat_id, f"⚠️ Usage: <code>/payemi [loan_id] [YYYY-MM]</code>\nError: {str(e)}")
             return
 
         if text:
