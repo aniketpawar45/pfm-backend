@@ -9,8 +9,8 @@ from supabase import create_client
 from api.core.config import settings
 
 class DBService:
-    _delete_sessions = {}  # chat_id -> {"records": [...], "title": str, "query_arg": str}
-    _selections_cache = {} # chat_id -> set of selected transaction IDs
+    _delete_sessions = {}
+    _selections_cache = {}
 
     @classmethod
     def get_client(cls):
@@ -440,9 +440,9 @@ class DBService:
         tx_res = supabase.table("transactions").select("amount, category").eq("chat_id", chat_id).eq("type", "expense").neq("category", "Loans & EMIs").gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
         actual_house_spent = sum(float(tx["amount"]) for tx in (tx_res.data or []))
 
-        percentage_used = (actual_house_spent / safe_house_budget * 100)
+        percentage_used = (actual_house_spent / safe_house_budget * 100) if safe_house_budget > 0 else 100.0
 
-warning_status = "safe"
+        warning_status = "safe"
         if percentage_used >= 100:
             warning_status = "breached"
         elif percentage_used >= 90:
@@ -450,7 +450,7 @@ warning_status = "safe"
         elif percentage_used >= 75:
             warning_status = "warning"
 
-        return {
+       return {
             "year_month": year_month,
             "base_salary": base_salary,
             "extra_income": extra_income,
@@ -462,3 +462,4 @@ warning_status = "safe"
             "percentage_used": round(percentage_used, 1),
             "warning_status": warning_status
         }
+     
