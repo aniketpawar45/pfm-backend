@@ -1,3 +1,4 @@
+import os
 import httpx
 from api.core.config import settings
 from api.services.ai_service import AIService
@@ -6,10 +7,18 @@ from api.services.db_service import DBService
 class TelegramService:
     @classmethod
     def get_api_url(cls) -> str:
+        # Check settings first, with direct os.environ fallback to prevent any config mapping gaps
         token = getattr(settings, "TELEGRAM_BOT_TOKEN", None)
-        if not token or not token.strip():
+        if not token:
+            token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        
+        if isinstance(token, str):
+            token = token.strip(" '\"")
+            
+        if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing or empty.")
-        return f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token.strip('\" ')}"
+            
+        return f"https://api.telegram.org/bot{token}"
 
     @classmethod
     async def send_message(cls, chat_id: int, text: str) -> int | None:
@@ -24,6 +33,8 @@ class TelegramService:
                 data = response.json()
                 if data.get("ok"):
                     return data["result"]["message_id"]
+                else:
+                    print(f"Telegram API Error: {data}")
             except Exception as e:
                 print(f"Failed to send Telegram message: {str(e)}")
         return None
@@ -188,7 +199,9 @@ class TelegramService:
             async with httpx.AsyncClient() as client:
                 file_info_resp = await client.get(f"{cls.get_api_url()}/getFile?file_id={file_id}")
                 file_path = file_info_resp.json()["result"]["file_path"]
-                file_resp = await client.get(f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){settings.TELEGRAM_BOT_TOKEN}/{file_path}")
+                token = getattr(settings, "TELEGRAM_BOT_TOKEN", None) or os.getenv("TELEGRAM_BOT_TOKEN", "")
+                token = str(token).strip(" '\"")
+                file_resp = await client.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
                 audio_bytes = file_resp.content
 
         if text or audio_bytes:
