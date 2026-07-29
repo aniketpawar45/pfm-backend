@@ -108,10 +108,21 @@ class DBService:
         return "all", None, None, "Recent Transactions"
 
     @classmethod
-    def get_delete_candidates_paginated(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int]:
+    def get_delete_view_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5, toggle_tx_id: int | None = None) -> tuple[str, list, int, int, list, int, float]:
         supabase = cls.get_client()
-        mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         
+        # 1. Handle toggle efficiently if requested
+        if toggle_tx_id is not None:
+            sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
+            current_sels = [row["transaction_id"] for row in (sel_resp.data or [])]
+            
+            if toggle_tx_id in current_sels:
+                supabase.table("user_selections").delete().eq("chat_id", chat_id).eq("transaction_id", toggle_tx_id).execute()
+            else:
+                supabase.table("user_selections").insert({"chat_id": chat_id, "transaction_id": toggle_tx_id}).execute()
+
+        # 2. Fetch delete candidates & selections concurrently / sequentially
+        mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         query = supabase.table("transactions").select("*").eq("chat_id", chat_id)
         if mode == "range":
             query = query.gte("date", start_date).lte("date", end_date)
@@ -121,15 +132,22 @@ class DBService:
         
         total_records = len(all_records)
         total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
-        
         if page >= total_pages:
             page = max(0, total_pages - 1)
             
         start_idx = page * page_size
-        end_idx = start_idx + page_size
-        paginated_records = all_records[start_idx:end_idx]
+        paginated_records = all_records[start_idx:start_idx + page_size]
         
-        return title, paginated_records, total_records, total_pages
+        # 3. Get selections and calculate totals
+        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
+        selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
+        
+        total_amt = 0.0
+        if selected_ids:
+            amt_resp = supabase.table("transactions").select("amount").in_("id", selected_ids).eq("chat_id", chat_id).execute()
+            total_amt = sum(float(r["amount"]) for r in (amt_resp.data or []))
+
+        return title, paginated_records, total_records, total_pages, selected_ids, len(selected_ids), total_amt
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
@@ -137,50 +155,10 @@ class DBService:
         supabase.table("user_selections").delete().eq("chat_id", chat_id).execute()
 
     @classmethod
-    def toggle_user_selection(cls, chat_id: int, transaction_id: int) -> list:
-        supabase = cls.get_client()
-        existing = supabase.table("user_selections")\
-            .select("*")\
-            .eq("chat_id", chat_id)\
-            .eq("transaction_id", transaction_id)\
-            .execute()
-            
-        if existing.data:
-            supabase.table("user_selections")\
-                .delete()\
-                .eq("chat_id", chat_id)\
-                .eq("transaction_id", transaction_id)\
-                .execute()
-        else:
-            supabase.table("user_selections")\
-                .insert({"chat_id": chat_id, "transaction_id": transaction_id})\
-                .execute()
-                
-        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-        return [row["transaction_id"] for row in (sel_resp.data or [])]
-
-    @classmethod
-    def get_user_selections(cls, chat_id: int) -> list:
-        supabase = cls.get_client()
-        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-        return [row["transaction_id"] for row in (sel_resp.data or [])]
-
-    @classmethod
-    def get_selected_totals(cls, chat_id: int) -> tuple[int, float]:
-        supabase = cls.get_client()
-        selected_ids = cls.get_user_selections(chat_id)
-        if not selected_ids:
-            return 0, 0.0
-            
-        resp = supabase.table("transactions").select("amount").in_("id", selected_ids).eq("chat_id", chat_id).execute()
-        records = resp.data or []
-        total_amt = sum(float(r["amount"]) for r in records)
-        return len(selected_ids), total_amt
-
-    @classmethod
     def confirm_and_delete(cls, chat_id: int) -> int:
         supabase = cls.get_client()
-        selected_ids = cls.get_user_selections(chat_id)
+        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
+        selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
         if not selected_ids:
             return 0
             
