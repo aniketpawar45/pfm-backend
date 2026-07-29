@@ -1,5 +1,9 @@
 import os
+import io
 import httpx
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from api.core.config import settings
 from api.services.ai_service import AIService
 from api.services.db_service import DBService
@@ -80,6 +84,57 @@ class TelegramService:
             await cls.send_message(chat_id, report)
         except Exception as e:
             await cls.send_message(chat_id, f"❌ <b>Error generating summary</b>\n<code>{str(e)}</code>")
+
+    @classmethod
+    async def send_chart_report(cls, chat_id: int, query_arg: str = ""):
+        try:
+            title, categories = DBService.get_category_data_for_chart(chat_id, query_arg=query_arg)
+            
+            if not categories:
+                await cls.send_message(
+                    chat_id, 
+                    f"📊 <b>{title}</b>\n\nNo expense records found to generate a chart!"
+                )
+                return
+
+            labels = list(categories.keys())
+            amounts = list(categories.values())
+
+            plt.figure(figsize=(7, 7))
+            plt.style.use('dark_background')
+            
+            colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0', '#ffb3e6', '#c4e1ff']
+            
+            wedges, texts, autotexts = plt.pie(
+                amounts, 
+                labels=labels, 
+                autopct='%1.1f%%', 
+                startangle=140, 
+                colors=colors[:len(labels)],
+                wedgeprops=dict(width=0.4, edgecolor='w')
+            )
+            
+            plt.setp(autotexts, size=10, weight="bold")
+            plt.setp(texts, size=11)
+            plt.title(f"Expense Breakdown\n{title}", fontsize=14, pad=20, weight='bold', color='white')
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', transparent=True)
+            buf.seek(0)
+            plt.close()
+
+            url = f"{cls.get_api_url()}/sendPhoto"
+            async with httpx.AsyncClient() as client:
+                files = {"photo": ("chart.png", buf.read(), "image/png")}
+                data = {
+                    "chat_id": chat_id,
+                    "caption": f"📊 <b>Visual Expense Breakdown — {title}</b>",
+                    "parse_mode": "HTML"
+                }
+                await client.post(url, data=data, files=files)
+
+        except Exception as e:
+            await cls.send_message(chat_id, f"❌ <b>Error generating chart</b>\n<code>{str(e)}</code>")
 
     @classmethod
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
@@ -211,11 +266,19 @@ class TelegramService:
         voice = message.get("voice")
 
         text_lower = text.lower()
+        
+        # Summary Command Handler
         if text_lower.startswith("/summary") or text_lower.startswith("/report") or text_lower.startswith("/month"):
-            # Extract everything after the command (e.g. "/summary july" -> "july")
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_summary_report(chat_id, query_arg=query_arg)
+            return
+
+        # Chart Command Handler
+        if text_lower.startswith("/chart") or text_lower.startswith("/graph"):
+            parts = text.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            await cls.send_chart_report(chat_id, query_arg=query_arg)
             return
 
         audio_bytes = None
