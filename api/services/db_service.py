@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from supabase import create_client
 from api.core.config import settings
@@ -5,8 +6,16 @@ from api.core.config import settings
 class DBService:
     @classmethod
     def get_client(cls):
-        url = settings.SUPABASE_URL.strip("'\" ")
-        key = settings.SUPABASE_KEY.strip("'\" ")
+        # Fetch with robust fallback to os.environ to prevent any missing attribute errors
+        url = getattr(settings, "SUPABASE_URL", None) or os.getenv("SUPABASE_URL", "")
+        key = getattr(settings, "SUPABASE_KEY", None) or os.getenv("SUPABASE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", "")
+        
+        url = str(url).strip("'\" ")
+        key = str(key).strip("'\" ")
+        
+        if not url or not key:
+            raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing from environment variables.")
+            
         return create_client(url, key)
 
     @classmethod
