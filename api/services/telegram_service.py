@@ -39,6 +39,13 @@ class TelegramService:
                     await cls.send_message(chat_id, "🤖 I'm your PFM assistant. Send me expenses, income notes, or itemized lists to log them!")
                     return
 
+                # Check if any item in the list is missing an amount
+                missing_amount_items = [item for item in valid_items if item.get("amount") is None]
+                if missing_amount_items:
+                    item_desc = missing_amount_items[0].get("description", "transaction")
+                    await cls.send_message(chat_id, f"⚠️ I noticed an item ('{item_desc}'), but the amount is missing. Please specify how much.")
+                    return
+
                 formatted_list = "\n".join([f"• <b>{item.get('description')}</b>: ₹{item.get('amount')} ({item.get('type', 'expense')})" for item in valid_items])
                 await cls.send_message(chat_id, f"✅ Successfully processed <b>{len(valid_items)}</b> items as bulk entries!\n\n{formatted_list}")
                 return
