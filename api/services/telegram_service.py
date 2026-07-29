@@ -124,13 +124,13 @@ class TelegramService:
     @classmethod
     async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
         try:
-            if toggle_tx_id is not None:
-                selected_ids = DBService.toggle_selection(chat_id, toggle_tx_id)
-            else:
-                selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)[4]
-                
-            title, records, total_records, total_pages, _ = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
+            title = DBService.parse_delete_query(query_arg)[3]
             
+            if toggle_tx_id is not None:
+                records, total_records, total_pages, selected_ids = DBService.toggle_and_get_page(chat_id, toggle_tx_id, query_arg, page, 5)
+            else:
+                records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg, page, 5)[1:]
+                
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
