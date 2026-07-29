@@ -15,6 +15,7 @@ async def telegram_webhook(request: Request):
     try:
         body = await request.json()
         
+        # Handle Callback Queries (Inline Keyboards for Delete / Pagination)
         if "callback_query" in body:
             callback = body["callback_query"]
             chat_id = callback["message"]["chat"]["id"]
@@ -63,6 +64,7 @@ async def telegram_webhook(request: Request):
 
         text_stripped = text.strip()
 
+        # Handle Commands
         if text_stripped.startswith("/start"):
             welcome_msg = (
                 "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
@@ -73,6 +75,7 @@ async def telegram_webhook(request: Request):
                 "• `/addloan Name | bank/family | high/low | Principal | Interest% | Months` - Add a loan\n"
                 "• `/loans` - View active liabilities & amortization status\n"
                 "• `/summary` - View monthly financial breakdown\n"
+                "• `/report` or `/statistics` - View detailed financial reports\n"
                 "• `/chart` - View expense category pie chart\n"
                 "• `/export` - Download CSV transaction report\n"
                 "• `/delete` - Manage and delete transactions\n\n"
@@ -190,6 +193,23 @@ async def telegram_webhook(request: Request):
                 msg += f"• {cat}: {amt:,.2f}\n"
             TelegramService.send_message(chat_id, msg)
 
+        elif text_stripped.startswith("/report") or text_stripped.startswith("/statistics"):
+            parts = text_stripped.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            summary = DBService.get_summary(chat_id, query_arg)
+            
+            msg = (
+                f"📊 **Financial Report & Statistics ({summary['title']})**\n\n"
+                f"• **Total Income:** {summary['total_income']:,.2f}\n"
+                f"• **Total Expenses:** {summary['total_expense']:,.2f}\n"
+                f"• **Net Balance:** {summary['net_balance']:,.2f}\n"
+                f"• **Total Transactions Logged:** {summary['count']}\n\n"
+                f"🏷️ **Category Breakdown:**\n"
+            )
+            for cat, amt in summary["categories"].items():
+                msg += f"• {cat}: {amt:,.2f}\n"
+            TelegramService.send_message(chat_id, msg)
+
         elif text_stripped.startswith("/chart"):
             parts = text_stripped.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
@@ -256,6 +276,7 @@ async def telegram_webhook(request: Request):
                 TelegramService.send_message(chat_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
 
         else:
+            # Natural Language Processing via AIService & DBService
             parsed = AIService.parse_transaction(text_stripped)
             if not parsed or not parsed.get("is_transaction", True):
                 TelegramService.send_message(chat_id, "🤖 I didn't quite catch that. You can log expenses, extra income, or pay EMIs naturally!")
