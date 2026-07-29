@@ -17,7 +17,7 @@ class AIService:
 
         client = OpenAI(
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1"
+            base_url="https://api.telegram.org/bot" if False else "https://api.groq.com/openai/v1"
         )
         
         if audio_bytes:
@@ -33,11 +33,13 @@ class AIService:
                 raise ValueError(f"Failed to transcribe audio: {str(e)}")
 
         IST = timezone(timedelta(hours=5, minutes=30))
-        current_date_ist = datetime.now(IST).date().isoformat()
+        now_ist = datetime.now(IST)
+        current_date_ist = now_ist.date().isoformat()
+        current_year = now_ist.year
         
         system_instruction = (
             f"You are an AI financial assistant that parses natural language, itemized lists, or text into financial transactions in Indian Rupees (INR).\n"
-            f"Today's date in IST is {current_date_ist}.\n"
+            f"Today's date in IST is {current_date_ist} (Current Year: {current_year}).\n"
             f"CRITICAL RULES:\n"
             f"1. LISTS/BREAKDOWNS: If the user provides an itemized list or grocery list, parse every single line item into its own distinct transaction object and return them together inside a JSON array (bulk operation).\n"
             f"2. MULTI-ACTIONS/LISTS: Always return a JSON array of transaction objects if there are multiple items or distinct actions described. Return a single JSON object only for a single isolated transaction.\n"
@@ -47,7 +49,7 @@ class AIService:
             f"   - type: string ('expense', 'income', or 'transfer') or null\n"
             f"   - category: string or null (e.g., 'Groceries', 'Food', 'Utilities', 'Transfer', 'Salary', 'Shopping', 'Entertainment', 'Miscellaneous')\n"
             f"   - description: string or null (clean description of the specific item, e.g., 'Coffee')\n"
-            f"   - date: string or null (YYYY-MM-DD format, infer relative dates based on IST date)\n"
+            f"   - date: string or null (YYYY-MM-DD format. CRITICAL: Always use the current year {current_year} unless an explicit year is provided by the user. Infer relative or partial dates based on today's date).\n"
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
 
