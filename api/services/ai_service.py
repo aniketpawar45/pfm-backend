@@ -50,11 +50,17 @@ class AIService:
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
 
-        # Automatic model fallback pipeline (Primary -> Fallback)
-        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        # Model configuration with model-specific safe token limits to respect TPM constraints
+        models_config = [
+            {"model": "llama-3.3-70b-versatile", "max_tokens": 8192},
+            {"model": "llama-3.1-8b-instant", "max_tokens": 2048}
+        ]
+        
         last_exception = None
 
-        for model_name in models_to_try:
+        for config in models_config:
+            model_name = config["model"]
+            max_tok = config["max_tokens"]
             try:
                 response = client.chat.completions.create(
                     model=model_name,
@@ -63,7 +69,7 @@ class AIService:
                         {"role": "user", "content": text_input or ""}
                     ],
                     temperature=0.0,
-                    max_tokens=8192
+                    max_tokens=max_tok
                 )
                 
                 result_text = response.choices[0].message.content.strip()
@@ -79,12 +85,12 @@ class AIService:
             except Exception as e:
                 last_exception = e
                 error_str = str(e).lower()
-                # If rate-limited or quota exceeded, seamlessly loop to the next fallback model
-                if "429" in error_str or "rate limit" in error_str or "tokens per day" in error_str:
+                # If rate-limited (429) or payload too large (413), loop to the next fallback model
+                if any(code in error_str for code in ["429", "413", "rate limit", "tokens per day", "tokens per minute", "too large"]):
                     continue
                 else:
-                    if model_name == models_to_try[-1]:
+                    if model_name == models_config[-1]["model"]:
                         raise ValueError(f"AI processing failed across all models: {str(e)}")
                     continue
         
-        raise ValueError(f"Groq API rate limit reached across all available models. Details: {str(last_exception)}")
+        raise ValueError(f"Groq API rate limit or capacity reached across all available models. Details: {str(last_exception)}")
