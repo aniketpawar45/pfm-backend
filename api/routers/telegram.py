@@ -15,7 +15,6 @@ async def telegram_webhook(request: Request):
     try:
         body = await request.json()
         
-        # Handle Callback Queries (Inline Keyboards for Delete / Pagination)
         if "callback_query" in body:
             callback = body["callback_query"]
             chat_id = callback["message"]["chat"]["id"]
@@ -64,7 +63,6 @@ async def telegram_webhook(request: Request):
 
         text_stripped = text.strip()
 
-        # Handle Commands
         if text_stripped.startswith("/start"):
             welcome_msg = (
                 "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
@@ -258,7 +256,6 @@ async def telegram_webhook(request: Request):
                 TelegramService.send_message(chat_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
 
         else:
-            # Natural Language Processing via AIService & DBService
             parsed = AIService.parse_transaction(text_stripped)
             if not parsed or not parsed.get("is_transaction", True):
                 TelegramService.send_message(chat_id, "🤖 I didn't quite catch that. You can log expenses, extra income, or pay EMIs naturally!")
