@@ -28,6 +28,10 @@ class DBService:
         items = parsed_data if isinstance(parsed_data, list) else [parsed_data]
         valid_records = []
         income_records = []
+        processed_results = []
+
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_month_str = datetime.now(IST).strftime("%Y-%m")
 
         for item in items:
             if not item.get("is_transaction", True) or item.get("amount") is None:
@@ -37,8 +41,78 @@ class DBService:
             desc = item.get("description") or "Miscellaneous"
             amt = float(item.get("amount"))
             cat = item.get("category") or "Miscellaneous"
-            t_date = item.get("date") or datetime.now().date().isoformat()
+            t_date = item.get("date") or datetime.now(IST).date().isoformat()
+            is_emi = item.get("is_emi_payment", False)
+            lender_name = (item.get("lender_name") or "").strip().lower()
 
+            # Smart automatic loan / lender matching if it's an EMI or mentions a lender
+            matched_loan = None
+            if is_emi or lender_name or "emi" in desc.lower():
+                loans_res = supabase.table("loans").select("*").eq("chat_id", chat_id).eq("status", "active").execute()
+                active_loans = loans_res.data or []
+                
+                for loan in active_loans:
+                    loan_name_lower = loan["name"].lower()
+                    if lender_name and lender_name in loan_name_lower:
+                        matched_loan = loan
+                        break
+                    if not matched_loan and (loan_name_lower in desc.lower() or desc.lower() in loan_name_lower):
+                        matched_loan = loan
+                        break
+
+            if matched_loan:
+                # Find pending installment for current month or earliest pending
+                inst_res = supabase.table("loan_installments").select("*").eq("loan_id", matched_loan["id"]).eq("status", "pending").order("installment_month").execute()
+                installments = inst_res.data or []
+                
+                target_inst = None
+                for inst in installments:
+                    if inst["installment_month"] == current_month_str:
+                        target_inst = inst
+                        break
+                if not target_inst and installments:
+                    target_inst = installments[0] # Pick closest pending
+
+                if target_inst:
+                    inst_month = target_inst["installment_month"]
+                    new_remaining = max(0.0, float(matched_loan["remaining_amount"]) - amt)
+                    new_status = "closed" if new_remaining == 0 else "active"
+
+                    # 1. Update Installment Status
+                    supabase.table("loan_installments").update({
+                        "status": "paid",
+                        "paid_date": t_date
+                    }).eq("id", target_inst["id"]).execute()
+
+                    # 2. Update Loan Remaining Principal & Status
+                    supabase.table("loans").update({
+                        "remaining_amount": new_remaining,
+                        "status": new_status
+                    }).eq("id", matched_loan["id"]).execute()
+
+                    # 3. Log transaction
+                    tx_record = {
+                        "chat_id": chat_id,
+                        "description": f"EMI: {matched_loan['name']} ({inst_month})",
+                        "amount": amt,
+                        "type": "expense",
+                        "category": "Loans & EMIs",
+                        "date": t_date
+                    }
+                    tx_resp = supabase.table("transactions").insert(tx_record).execute()
+                    
+                    if tx_resp.data:
+                        processed_results.append({
+                            **tx_resp.data[0],
+                            "is_auto_emi": True,
+                            "loan_name": matched_loan["name"],
+                            "installment_month": inst_month,
+                            "remaining_principal": new_remaining,
+                            "loan_status": new_status
+                        })
+                    continue
+
+            # Standard transaction / income logging
             valid_records.append({
                 "chat_id": chat_id,
                 "description": desc,
@@ -48,7 +122,6 @@ class DBService:
                 "date": t_date
             })
 
-            # Automatically sync income items into the incomes table for budget guardrails
             if tx_type == "income":
                 income_records.append({
                     "chat_id": chat_id,
@@ -58,18 +131,18 @@ class DBService:
                     "date": t_date
                 })
 
-        if not valid_records:
-            return []
-        
-        response = supabase.table("transactions").insert(valid_records).execute()
-        
+        if valid_records:
+            response = supabase.table("transactions").insert(valid_records).execute()
+            for r in (response.data or []):
+                processed_results.append({**r, "is_auto_emi": False})
+
         if income_records:
             try:
                 supabase.table("incomes").insert(income_records).execute()
             except Exception as e:
                 print(f"Failed to sync income record to incomes table: {str(e)}")
 
-        return response.data or []
+        return processed_results
 
     @classmethod
     def parse_delete_query(cls, query_arg: str) -> tuple[str, str | None, str | None, str]:
@@ -285,55 +358,6 @@ class DBService:
         supabase = cls.get_client()
         res = supabase.table("loans").select("*").eq("chat_id", chat_id).execute()
         return res.data or []
-
-    @classmethod
-    def pay_loan_installment_by_month(cls, chat_id: int, loan_id: int, installment_month: str) -> dict:
-        supabase = cls.get_client()
-        loan_res = supabase.table("loans").select("*").eq("id", loan_id).eq("chat_id", chat_id).execute()
-        if not loan_res.data:
-            raise ValueError("Loan not found.")
-        loan = loan_res.data[0]
-
-        inst_res = supabase.table("loan_installments").select("*").eq("loan_id", loan_id).eq("installment_month", installment_month).execute()
-        if not inst_res.data:
-            raise ValueError(f"No installment found for month {installment_month}.")
-        
-        installment = inst_res.data[0]
-        if installment["status"] == "paid":
-            raise ValueError(f"Installment for {installment_month} is already paid!")
-
-        emi_amt = float(installment["emi_amount"])
-        new_remaining = max(0.0, float(loan["remaining_amount"]) - emi_amt)
-        new_status = "closed" if new_remaining == 0 else "active"
-        today_str = datetime.now().date().isoformat()
-
-        supabase.table("loan_installments").update({
-            "status": "paid",
-            "paid_date": today_str
-        }).eq("id", installment["id"]).execute()
-
-        supabase.table("loans").update({
-            "remaining_amount": new_remaining,
-            "status": new_status
-        }).eq("id", loan_id).execute()
-
-        tx_record = {
-            "chat_id": chat_id,
-            "description": f"EMI: {loan['name']} ({installment_month})",
-            "amount": emi_amt,
-            "type": "expense",
-            "category": "Loans & EMIs",
-            "date": today_str
-        }
-        supabase.table("transactions").insert(tx_record).execute()
-
-        return {
-            "loan_name": loan["name"],
-            "installment_month": installment_month,
-            "emi_paid": emi_amt,
-            "remaining_principal": new_remaining,
-            "loan_status": new_status
-        }
 
     @classmethod
     def get_monthly_budget_guardrail(cls, chat_id: int, year_month: str) -> dict:
