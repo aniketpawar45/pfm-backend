@@ -111,7 +111,6 @@ class DBService:
     def get_delete_view_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5, toggle_tx_id: int | None = None) -> tuple[str, list, int, int, list, int, float]:
         supabase = cls.get_client()
         
-        # 1. Handle toggle efficiently if requested
         if toggle_tx_id is not None:
             sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
             current_sels = [row["transaction_id"] for row in (sel_resp.data or [])]
@@ -121,7 +120,6 @@ class DBService:
             else:
                 supabase.table("user_selections").insert({"chat_id": chat_id, "transaction_id": toggle_tx_id}).execute()
 
-        # 2. Fetch delete candidates & selections concurrently / sequentially
         mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         query = supabase.table("transactions").select("*").eq("chat_id", chat_id)
         if mode == "range":
@@ -138,7 +136,6 @@ class DBService:
         start_idx = page * page_size
         paginated_records = all_records[start_idx:start_idx + page_size]
         
-        # 3. Get selections and calculate totals
         sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
         selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
         
