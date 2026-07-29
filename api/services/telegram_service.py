@@ -1,6 +1,7 @@
 import httpx
 from api.core.config import settings
 from api.services.ai_service import AIService
+from api.services.db_service import DBService
 
 class TelegramService:
     @classmethod
@@ -8,7 +9,7 @@ class TelegramService:
         token = getattr(settings, "TELEGRAM_BOT_TOKEN", None)
         if not token or not token.strip():
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing or empty.")
-        return f"https://api.telegram.org/bot{token.strip('\" ')}"
+        return f"[https://api.telegram.org/bot](https://api.telegram.org/bot){token.strip('\" ')}"
 
     @classmethod
     async def send_message(cls, chat_id: int, text: str) -> int | None:
@@ -64,8 +65,11 @@ class TelegramService:
                 await cls.edit_message(
                     chat_id, 
                     msg_id, 
-                    "🔄 <b>[90%]</b> Validating amounts & ledger formatting..."
+                    "🔄 <b>[90%]</b> Validating amounts & saving to Supabase ledger..."
                 )
+
+            # Save to Supabase Database
+            DBService.save_transactions(chat_id, parsed_data)
 
             # Handle bulk list items or single items returned as lists
             if isinstance(parsed_data, list):
@@ -98,13 +102,15 @@ class TelegramService:
                     desc = item.get("description") or "Miscellaneous"
                     amount = item.get("amount")
                     t_type = item.get("type", "expense")
+                    t_category = item.get("category", "Miscellaneous")
                     t_date = item.get("date", "Today")
 
                     final_text = (
-                        f"✨ <b>Transaction Logged Successfully</b>\n\n"
+                        f"✨ <b>Transaction Logged & Saved!</b>\n\n"
                         f"🔹 <b>Description:</b> {desc}\n"
                         f"💰 <b>Amount:</b> ₹{amount:,.2f}\n"
                         f"📂 <b>Type:</b> {t_type.capitalize()}\n"
+                        f"🏷️ <b>Category:</b> {t_category}\n"
                         f"📅 <b>Date:</b> {t_date}"
                     )
                     await cls.edit_message(chat_id, msg_id, final_text)
@@ -117,8 +123,8 @@ class TelegramService:
                 ])
                 
                 final_text = (
-                    f"✨ <b>Bulk Transactions Logged Successfully!</b>\n"
-                    f"<i>Processed <b>{len(valid_items)}</b> items</i>\n\n"
+                    f"✨ <b>Bulk Transactions Logged & Saved!</b>\n"
+                    f"<i>Processed & saved <b>{len(valid_items)}</b> items</i>\n\n"
                     f"{formatted_list}"
                 )
                 await cls.edit_message(chat_id, msg_id, final_text)
@@ -145,13 +151,15 @@ class TelegramService:
                 desc = parsed_data.get("description") or "Miscellaneous"
                 amount = parsed_data.get("amount")
                 t_type = parsed_data.get("type", "expense")
+                t_category = parsed_data.get("category", "Miscellaneous")
                 t_date = parsed_data.get("date", "Today")
 
                 final_text = (
-                    f"✨ <b>Transaction Logged Successfully</b>\n\n"
+                    f"✨ <b>Transaction Logged & Saved!</b>\n\n"
                     f"🔹 <b>Description:</b> {desc}\n"
                     f"💰 <b>Amount:</b> ₹{amount:,.2f}\n"
                     f"📂 <b>Type:</b> {t_type.capitalize()}\n"
+                    f"🏷️ <b>Category:</b> {t_category}\n"
                     f"📅 <b>Date:</b> {t_date}"
                 )
                 await cls.edit_message(chat_id, msg_id, final_text)
@@ -180,7 +188,7 @@ class TelegramService:
             async with httpx.AsyncClient() as client:
                 file_info_resp = await client.get(f"{cls.get_api_url()}/getFile?file_id={file_id}")
                 file_path = file_info_resp.json()["result"]["file_path"]
-                file_resp = await client.get(f"https://api.telegram.org/file/bot{settings.TELEGRAM_BOT_TOKEN}/{file_path}")
+                file_resp = await client.get(f"[https://api.telegram.org/file/bot](https://api.telegram.org/file/bot){settings.TELEGRAM_BOT_TOKEN}/{file_path}")
                 audio_bytes = file_resp.content
 
         if text or audio_bytes:
