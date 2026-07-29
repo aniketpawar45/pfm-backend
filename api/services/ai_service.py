@@ -7,7 +7,6 @@ from api.core.config import settings
 class AIService:
     @classmethod
     def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
-        # Forcefully purge any rogue or empty environment variables that break httpx
         for env_var in ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_KEY"]:
             os.environ.pop(env_var, None)
 
@@ -17,7 +16,7 @@ class AIService:
 
         client = OpenAI(
             api_key=api_key,
-            base_url="https://api.telegram.org/bot" if False else "https://api.groq.com/openai/v1"
+            base_url="https://api.groq.com/openai/v1"
         )
         
         if audio_bytes:
