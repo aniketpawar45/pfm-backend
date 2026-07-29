@@ -63,52 +63,87 @@ class TelegramService:
                 print(f"Failed to answer callback query: {str(e)}")
 
     @classmethod
-    def build_delete_keyboard(cls, records: list, selected_ids: list) -> dict:
+    def build_delete_keyboard(cls, records: list, selected_ids: list, page: int, total_pages: int, query_arg: str) -> dict:
         keyboard = []
         for r in records:
             tx_id = r["id"]
             is_selected = tx_id in selected_ids
             
-            # Color coding & icons for identification
-            icon = "🟢 [SELECTED]" if is_selected else "⚪ [Tap to Select]"
+            icon = "🟢 [SELECTED]" if is_selected else "⚪ [Tap]"
             desc = r.get("description") or "Misc"
             amt = float(r.get("amount", 0))
             date = r.get("date")
             t_type = r.get("type", "expense").capitalize()
             
             btn_text = f"{icon} {date} | {desc} (₹{amt:,.2f}) [{t_type}]"
-            keyboard.append([{"text": btn_text, "callback_data": f"del_toggle_{tx_id}"}])
+            # Format: del_t:{tx_id}:{page}:{query_arg}
+            keyboard.append([{"text": btn_text, "callback_data": f"del_t:{tx_id}:{page}:{query_arg}"}])
             
-        count = len(selected_ids)
-        control_row = [
-            {"text": f"🗑️ Confirm Delete ({count})", "callback_data": "del_confirm"},
+        # Pagination Row
+        nav_row = []
+        if page > 0:
+            nav_row.append({"text": "⬅️ Prev", "callback_data": f"del_pg:{page - 1}:{query_arg}"})
+        
+        nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": "del_noop"})
+        
+        if page < total_pages - 1:
+            nav_row.append({"text": "Next ➡️", "callback_data": f"del_pg:{page + 1}:{query_arg}"})
+            
+        keyboard.append(nav_row)
+        
+        # Action Row
+        count, _ = DBService.get_selected_totals(chat_id=records[0]["chat_id"] if records else 0)
+        action_row = [
+            {"text": f"🗑️ Confirm ({count})", "callback_data": "del_confirm"},
             {"text": "❌ Cancel", "callback_data": "del_cancel"}
         ]
-        keyboard.append(control_row)
+        keyboard.append(action_row)
         return {"inline_keyboard": keyboard}
 
     @classmethod
-    async def send_delete_menu(cls, chat_id: int, query_arg: str = ""):
+    async def send_delete_menu(cls, chat_id: int, query_arg: str = "", page: int = 0):
         try:
-            DBService.clear_user_selections(chat_id)
-            title, records = DBService.get_delete_candidates(chat_id, query_arg=query_arg)
+            if page == 0:
+                DBService.clear_user_selections(chat_id)
+                
+            title, records, total_records, total_pages = DBService.get_delete_candidates_paginated(chat_id, query_arg=query_arg, page=page, page_size=5)
             
-            if not records:
+            if total_records == 0:
                 await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found matching your query.")
                 return
 
+            count, total_amt = DBService.get_selected_totals(chat_id)
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 = <b>Selected for Deletion</b>\n"
-                f"⚪ = <b>Unselected</b>\n"
+                f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
+                f"⚪ <b>Unselected</b> | Total Records: {total_records}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>Tap any item below to toggle its selection state.</i>"
+                f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
             )
-            markup = cls.build_delete_keyboard(records, [])
+            markup = cls.build_delete_keyboard(records, DBService.get_user_selections(chat_id), page, total_pages, query_arg)
             await cls.send_message(chat_id, text, reply_markup=markup)
         except Exception as e:
             await cls.send_message(chat_id, f"❌ <b>Error opening delete menu</b>\n<code>{str(e)}</code>")
+
+    @classmethod
+    async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0):
+        try:
+            title, records, total_records, total_pages = DBService.get_delete_candidates_paginated(chat_id, query_arg=query_arg, page=page, page_size=5)
+            count, total_amt = DBService.get_selected_totals(chat_id)
+            
+            text = (
+                f"🗑️ <b>Delete Manager — {title}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
+                f"⚪ <b>Unselected</b> | Total Records: {total_records}\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
+            )
+            markup = cls.build_delete_keyboard(records, DBService.get_user_selections(chat_id), page, total_pages, query_arg)
+            await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
+        except Exception as e:
+            print(f"Failed to update delete menu: {str(e)}")
 
     @classmethod
     async def send_summary_report(cls, chat_id: int, query_arg: str = ""):
@@ -254,24 +289,33 @@ class TelegramService:
             chat_id = message["chat"]["id"] if message else callback_query["from"]["id"]
             message_id = message["message_id"] if message else None
 
-            if data.startswith("del_toggle_"):
-                tx_id = int(data.replace("del_toggle_", ""))
-                selected_ids = DBService.toggle_user_selection(chat_id, tx_id)
+            if data == "del_noop":
+                await cls.answer_callback_query(query_id, "Page indicator")
+                return
+
+            if data.startswith("del_t:"):
+                # format: del_t:{tx_id}:{page}:{query_arg}
+                parts = data.split(":", 3)
+                tx_id = int(parts[1])
+                page = int(parts[2])
+                query_arg = parts[3] if len(parts) > 3 else ""
+                
+                DBService.toggle_user_selection(chat_id, tx_id)
                 await cls.answer_callback_query(query_id, "Selection updated")
                 
-                _, records = DBService.get_delete_candidates(chat_id, query_arg="")
-                markup = cls.build_delete_keyboard(records, selected_ids)
                 if message_id:
-                    count, total_amt = DBService.get_selected_totals(chat_id, records)
-                    text = (
-                        f"🗑️ <b>Delete Manager</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"🟢 = <b>Selected</b> ({count} items | ₹{total_amt:,.2f})\n"
-                        f"⚪ = <b>Unselected</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"<i>Tap items to select/deselect.</i>"
-                    )
-                    await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
+                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page)
+                return
+
+            if data.startswith("del_pg:"):
+                # format: del_pg:{page}:{query_arg}
+                parts = data.split(":", 2)
+                page = int(parts[1])
+                query_arg = parts[2] if len(parts) > 2 else ""
+                
+                await cls.answer_callback_query(query_id, f"Page {page + 1}")
+                if message_id:
+                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page)
                 return
 
             if data == "del_confirm":
@@ -306,7 +350,7 @@ class TelegramService:
         if text_lower.startswith("/delete") or text_lower.startswith("/remove"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
-            await cls.send_delete_menu(chat_id, query_arg=query_arg)
+            await cls.send_delete_menu(chat_id, query_arg=query_arg, page=0)
             return
 
         if text_lower.startswith("/summary") or text_lower.startswith("/report") or text_lower.startswith("/month"):
