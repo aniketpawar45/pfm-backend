@@ -1,10 +1,11 @@
+import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    SUPABASE_URL: str
-    SUPABASE_SERVICE_ROLE_KEY: str
-    TELEGRAM_BOT_TOKEN: str
-    GROQ_API_KEY: str
+    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", os.getenv("SUPABASE_ANON_KEY", ""))
 
     class Config:
         env_file = ".env"
