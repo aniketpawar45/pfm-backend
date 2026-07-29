@@ -15,13 +15,11 @@ class AIService:
         if not api_key:
             raise ValueError("GROQ_API_KEY is missing or empty.")
 
-        # Initialize Groq client with an explicit, unmodifiable base URL
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
         )
         
-        # Transcribe voice notes securely using Whisper Large V3
         if audio_bytes:
             try:
                 audio_file = ("voice_note.ogg", audio_bytes)
@@ -41,13 +39,13 @@ class AIService:
             f"You are an AI financial assistant that parses natural language, itemized lists, or text into financial transactions in Indian Rupees (INR).\n"
             f"Today's date in IST is {current_date_ist}.\n"
             f"CRITICAL RULES:\n"
-            f"1. LISTS/BREAKDOWNS: If the user provides a large itemized list or grocery list, aggregate them into a SINGLE bulk expense transaction using the grand total or estimated total provided at the bottom, with a clean description like 'Monthly Groceries'.\n"
-            f"2. MULTI-ACTIONS: If multiple distinct transactions are described, return a JSON array of transaction objects. If a single transaction, return a single JSON object.\n"
+            f"1. LISTS/BREAKDOWNS: If the user provides an itemized list or grocery list, **do not combine them into a single summary**. Instead, parse **every single line item** into its own distinct transaction object and return them together inside a JSON array (bulk operation).\n"
+            f"2. MULTI-ACTIONS/LISTS: Always return a JSON array of transaction objects if there are multiple items or distinct actions described. Return a single JSON object only for a single isolated transaction.\n"
             f"3. Each transaction object must contain strictly these keys:\n"
             f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
-            f"   - amount: float or null (numeric value only, no currency symbols)\n"
+            f"   - amount: float or null (numeric value only, exact price for that specific item, no currency symbols)\n"
             f"   - type: string ('expense' or 'income') or null\n"
-            f"   - description: string or null (short, clean description)\n"
+            f"   - description: string or null (clean description of the specific item, e.g., 'Rice - 10 kg')\n"
             f"   - date: string or null (YYYY-MM-DD format, infer relative dates based on IST date)\n"
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
@@ -59,7 +57,7 @@ class AIService:
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": text_input or ""}
                 ],
-                temperature=0.1
+                temperature=0.0
             )
         except Exception as e:
             raise ValueError(f"Groq API call failed: {str(e)}")
