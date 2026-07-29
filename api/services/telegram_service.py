@@ -268,8 +268,8 @@ class TelegramService:
                 if not saved_records:
                     await cls.edit_message(chat_id, msg_id, "🤖 No valid transactions found.")
                     return
-                list_str = "\n".join([f"• <b>{r.get('description')}</b>: ₹{r.get('amount'):,.2f}" for r in saved_records])
-                await cls.edit_message(chat_id, msg_id, f"✨ <b>Bulk Transactions Logged ({len(saved_records)})</b>\n\n{list_str}{warning_suffix}")
+                list_str = "\n".join([f"• <b>{r.get('description')}</b> ({r.get('type')}): ₹{r.get('amount'):,.2f}" for r in saved_records])
+                await cls.edit_message(chat_id, msg_id, f"✨ <b>Bulk Items Logged ({len(saved_records)})</b>\n\n{list_str}{warning_suffix}")
                 return
 
             if isinstance(parsed_data, dict):
@@ -277,7 +277,8 @@ class TelegramService:
                     await cls.edit_message(chat_id, msg_id, "🤖 Send me expenses or commands to manage your finance.")
                     return
                 record = saved_records[0]
-                await cls.edit_message(chat_id, msg_id, f"✨ <b>Transaction Logged!</b>\n\n🔹 {record.get('description')}: ₹{record.get('amount'):,.2f} ({record.get('category')}){warning_suffix}")
+                icon = "📥" if record.get("type") == "income" else "✨"
+                await cls.edit_message(chat_id, msg_id, f"{icon} <b>Logged Successfully!</b>\n\n🔹 {record.get('description')}: ₹{record.get('amount'):,.2f} ({record.get('category')}){warning_suffix}")
         except Exception as e:
             if msg_id:
                 await cls.edit_message(chat_id, msg_id, f"❌ Error: <code>{str(e)}</code>")
@@ -360,33 +361,6 @@ class TelegramService:
                 await cls.send_message(chat_id, f"✅ Base salary configured to ₹{salary:,.2f}")
             except Exception:
                 await cls.send_message(chat_id, "⚠️ Usage: <code>/setsalary [amount]</code>")
-            return
-
-        if text_lower.startswith("/addincome"):
-            try:
-                parts = text.split(maxsplit=1)[1].split("|")
-                amount = float(parts[0].strip())
-                source = parts[1].strip() if len(parts) > 1 else "Extra Income"
-                supabase = DBService.get_client()
-                today_str = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
-                supabase.table("incomes").insert({
-                    "chat_id": chat_id,
-                    "source_name": source,
-                    "amount": amount,
-                    "category": "Extra Income",
-                    "date": today_str
-                }).execute()
-                supabase.table("transactions").insert({
-                    "chat_id": chat_id,
-                    "description": source,
-                    "amount": amount,
-                    "type": "income",
-                    "category": "Extra Income",
-                    "date": today_str
-                }).execute()
-                await cls.send_message(chat_id, f"✅ <b>Extra Income Logged!</b>\n\n💰 Source: {source}\n📥 Amount: ₹{amount:,.2f}")
-            except Exception as e:
-                await cls.send_message(chat_id, f"⚠️ Usage: <code>/addincome [Amount] | [Source Name]</code>\nError: {str(e)}")
             return
 
         if text_lower.startswith("/budget"):
