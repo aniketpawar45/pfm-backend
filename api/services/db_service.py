@@ -1,5 +1,7 @@
 import os
 import re
+import csv
+import io
 import calendar
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
@@ -53,7 +55,6 @@ class DBService:
         
         query_arg = query_arg.strip().lower()
         
-        # 1. Default (Empty) -> Current Month
         if not query_arg:
             start = now_ist.replace(day=1).date().isoformat()
             end = today.isoformat()
@@ -61,7 +62,6 @@ class DBService:
 
         parts = query_arg.split()
         
-        # 2. Relative Keywords
         if query_arg in ["daily", "today", "day"]:
             d = today.isoformat()
             return d, d, f"Daily Summary ({now_ist.strftime('%d %b %Y')})"
@@ -85,12 +85,10 @@ class DBService:
             'nov': 11, 'november': 11, 'dec': 12, 'december': 12
         }
 
-        # 3. Year only e.g. "2025"
         if re.match(r'^\d{4}$', query_arg):
             year = int(query_arg)
             return f"{year}-01-01", f"{year}-12-31", f"Yearly Summary ({year})"
 
-        # 4. Month name or month number only e.g. "july", "jun", or "6"
         month_num = None
         if query_arg in months:
             month_num = months[query_arg]
@@ -107,7 +105,6 @@ class DBService:
             month_name = calendar.month_name[month_num]
             return start, end, f"Summary for {month_name} {year}"
 
-        # 5. Day + Month e.g. "5 jun", "15 july", "5 june 2026"
         if len(parts) >= 2 and parts[0].isdigit():
             day = int(parts[0])
             m_token = parts[1]
@@ -126,7 +123,6 @@ class DBService:
                 except ValueError:
                     pass
 
-        # Fallback to current month
         start = now_ist.replace(day=1).date().isoformat()
         end = today.isoformat()
         return start, end, f"Monthly Summary ({now_ist.strftime('%B %Y')})"
@@ -188,3 +184,40 @@ class DBService:
             
         sorted_categories = dict(sorted(categories.items(), key=lambda item: item[1], reverse=True))
         return title, sorted_categories
+
+    @classmethod
+    def get_transactions_for_export(cls, chat_id: int, query_arg: str = "") -> tuple[str, str, list]:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        
+        response = supabase.table("transactions")\
+            .select("*")\
+            .eq("chat_id", chat_id)\
+            .gte("date", start_date)\
+            .lte("date", end_date)\
+            .order("date", desc=True)\
+            .execute()
+        
+        records = response.data or []
+        filename = f"PFM_Export_{start_date}_to_{end_date}.csv"
+        return filename, title, records
+
+    @classmethod
+    def get_category_drilldown_data(cls, chat_id: int, category_query: str) -> tuple[str, list]:
+        supabase = cls.get_client()
+        category_query = category_query.strip().lower()
+        
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        start_of_month = now_ist.replace(day=1).date().isoformat()
+        
+        response = supabase.table("transactions")\
+            .select("*")\
+            .eq("chat_id", chat_id)\
+            .gte("date", start_of_month)\
+            .order("date", desc=True)\
+            .execute()
+            
+        records = response.data or []
+        filtered = [r for r in records if category_query in (r.get("category") or "").lower()]
+        return category_query.capitalize(), filtered
