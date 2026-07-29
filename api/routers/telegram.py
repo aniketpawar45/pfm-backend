@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from api.services.telegram_service import TelegramService
 
-router = APIRouter(prefix="/telegram", tags=["telegram"])
+router = APIRouter()
 
 @router.post("/webhook")
 async def telegram_webhook(request: Request):
-    update = await request.json()
-    
-    # We must await this directly. If we use a BackgroundTask, 
-    # Vercel will kill the process before it finishes sending the reply.
-    await TelegramService.process_update(update)
-    
-    return {"status": "ok"}
+    try:
+        body = await request.json()
+        await TelegramService.process_update(body)
+        return {"ok": True}
+    except Exception as e:
+        print(f"Webhook Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
