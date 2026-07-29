@@ -166,3 +166,25 @@ class DBService:
             "categories": sorted_categories,
             "count": len(records)
         }
+
+    @classmethod
+    def get_category_data_for_chart(cls, chat_id: int, query_arg: str = "") -> tuple[str, dict]:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        
+        response = supabase.table("transactions")\
+            .select("*")\
+            .eq("chat_id", chat_id)\
+            .eq("type", "expense")\
+            .gte("date", start_date)\
+            .lte("date", end_date)\
+            .execute()
+        
+        records = response.data or []
+        categories = {}
+        for r in records:
+            cat = r["category"] or "Miscellaneous"
+            categories[cat] = categories.get(cat, 0.0) + float(r["amount"])
+            
+        sorted_categories = dict(sorted(categories.items(), key=lambda item: item[1], reverse=True))
+        return title, sorted_categories
