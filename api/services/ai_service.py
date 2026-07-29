@@ -4,11 +4,10 @@ from datetime import datetime, timezone, timedelta
 from openai import OpenAI
 from api.core.config import settings
 
-
 class AIService:
     @classmethod
     def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
-        # Explicitly purge any rogue environment variables that break the OpenAI SDK base URL
+        # Forcefully purge any rogue or empty environment variables that break httpx
         for env_var in ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_KEY"]:
             os.environ.pop(env_var, None)
 
@@ -16,12 +15,12 @@ class AIService:
         if not api_key:
             raise ValueError("GROQ_API_KEY is missing or empty.")
 
-        # Initialize Groq client with a hardcoded, absolute base URL
+        # Initialize Groq client with an explicit, unmodifiable base URL
         client = OpenAI(
             api_key=api_key,
             base_url="https://api.groq.com/openai/v1"
         )
-
+        
         # Transcribe voice notes securely using Whisper Large V3
         if audio_bytes:
             try:
@@ -37,7 +36,7 @@ class AIService:
 
         IST = timezone(timedelta(hours=5, minutes=30))
         current_date_ist = datetime.now(IST).date().isoformat()
-
+        
         system_instruction = (
             f"You are an AI financial assistant that parses natural language, itemized lists, or text into financial transactions in Indian Rupees (INR).\n"
             f"Today's date in IST is {current_date_ist}.\n"
@@ -53,15 +52,18 @@ class AIService:
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": text_input or ""}
-            ],
-            temperature=0.1
-        )
-
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": text_input or ""}
+                ],
+                temperature=0.1
+            )
+        except Exception as e:
+            raise ValueError(f"Groq API call failed: {str(e)}")
+        
         try:
             result_text = response.choices[0].message.content.strip()
             if result_text.startswith("```json"):
@@ -70,7 +72,7 @@ class AIService:
                 result_text = result_text[3:]
             if result_text.endswith("```"):
                 result_text = result_text[:-3]
-
+                
             data = json.loads(result_text.strip())
             return data
         except Exception as e:
