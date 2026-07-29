@@ -9,8 +9,9 @@ from supabase import create_client
 from api.core.config import settings
 
 class DBService:
-    # In-memory cache for instant selection toggling (Zero DB writes on click)
-    _selections_cache = {}
+    # In-memory session caches to eliminate database roundtrips during interaction
+    _delete_sessions = {}  # chat_id -> {"records": [...], "title": str, "query_arg": str}
+    _selections_cache = {} # chat_id -> set of selected transaction IDs
 
     @classmethod
     def get_client(cls):
@@ -109,46 +110,59 @@ class DBService:
         return "all", None, None, "Recent Transactions"
 
     @classmethod
-    def get_delete_page_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int, set]:
+    def load_delete_session(cls, chat_id: int, query_arg: str = ""):
         supabase = cls.get_client()
         mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         
-        query = supabase.table("transactions").select("*", count="exact").eq("chat_id", chat_id)
+        query = supabase.table("transactions").select("*").eq("chat_id", chat_id)
         if mode == "range":
             query = query.gte("date", start_date).lte("date", end_date)
             
         response = query.order("date", desc=True).order("id", desc=True).execute()
-        all_records = response.data or []
+        records = response.data or []
         
-        total_records = len(all_records)
+        cls._delete_sessions[chat_id] = {
+            "records": records,
+            "title": title,
+            "query_arg": query_arg
+        }
+        cls._selections_cache[chat_id] = set()
+        return records, title
+
+    @classmethod
+    def get_cached_delete_view(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5, toggle_tx_id: int | None = None):
+        session = cls._delete_sessions.get(chat_id)
+        if not session or session.get("query_arg") != query_arg:
+            records, title = cls.load_delete_session(chat_id, query_arg)
+        else:
+            records = session["records"]
+            title = session["title"]
+            
+        if toggle_tx_id is not None:
+            if chat_id not in cls._selections_cache:
+                cls._selections_cache[chat_id] = set()
+            if toggle_tx_id in cls._selections_cache[chat_id]:
+                cls._selections_cache[chat_id].remove(toggle_tx_id)
+            else:
+                cls._selections_cache[chat_id].add(toggle_tx_id)
+                
+        total_records = len(records)
         total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
         if page >= total_pages and total_pages > 0:
             page = max(0, total_pages - 1)
             
         start_idx = page * page_size
-        paginated_records = all_records[start_idx:start_idx + page_size]
+        paginated_records = records[start_idx:start_idx + page_size]
+        selected_ids = cls._selections_cache.get(chat_id, set())
         
-        if chat_id not in cls._selections_cache:
-            cls._selections_cache[chat_id] = set()
-            
-        return title, paginated_records, total_records, total_pages, cls._selections_cache[chat_id]
-
-    @classmethod
-    def toggle_selection(cls, chat_id: int, tx_id: int) -> set:
-        if chat_id not in cls._selections_cache:
-            cls._selections_cache[chat_id] = set()
-            
-        if tx_id in cls._selections_cache[chat_id]:
-            cls._selections_cache[chat_id].remove(tx_id)
-        else:
-            cls._selections_cache[chat_id].add(tx_id)
-            
-        return cls._selections_cache[chat_id]
+        return title, paginated_records, total_records, total_pages, selected_ids
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
         if chat_id in cls._selections_cache:
             cls._selections_cache[chat_id].clear()
+        if chat_id in cls._delete_sessions:
+            cls._delete_sessions.pop(chat_id, None)
 
     @classmethod
     def confirm_and_delete(cls, chat_id: int) -> int:
