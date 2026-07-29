@@ -1,7 +1,7 @@
-fastapi
-uvicorn
-httpx
-supabase
-pydantic-settings
-openai
-pyjwt
+fastapi>=0.100.0
+uvicorn>=0.22.0
+supabase>=2.0.0
+openai>=1.0.0
+httpx>=0.24.0
+matplotlib>=3.7.0
+pydantic-settings>=2.0.0
