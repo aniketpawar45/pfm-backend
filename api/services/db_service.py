@@ -1,3 +1,189 @@
+import os
+import re
+import csv
+import io
+import math
+import calendar
+from datetime import datetime, timezone, timedelta
+from supabase import create_client
+from api.core.config import settings
+
+class DBService:
+    _delete_sessions = {}  # chat_id -> {"records": [...], "title": str, "query_arg": str}
+    _selections_cache = {} # chat_id -> set of selected transaction IDs
+
+    @classmethod
+    def get_client(cls):
+        url = getattr(settings, "SUPABASE_URL", None) or os.getenv("SUPABASE_URL", "")
+        key = getattr(settings, "SUPABASE_KEY", None) or os.getenv("SUPABASE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", "")
+        url = str(url).strip("'\" ")
+        key = str(key).strip("'\" ")
+        if not url or not key:
+            raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing from environment variables.")
+        return create_client(url, key)
+
+    @classmethod
+    def save_transactions(cls, chat_id: int, parsed_data: dict | list) -> list:
+        supabase = cls.get_client()
+        items = parsed_data if isinstance(parsed_data, list) else [parsed_data]
+        valid_records = []
+        for item in items:
+            if not item.get("is_transaction", True) or item.get("amount") is None:
+                continue
+            valid_records.append({
+                "chat_id": chat_id,
+                "description": item.get("description") or "Miscellaneous",
+                "amount": float(item.get("amount")),
+                "type": item.get("type", "expense"),
+                "category": item.get("category") or "Miscellaneous",
+                "date": item.get("date") or datetime.now().date().isoformat()
+            })
+        if not valid_records:
+            return []
+        response = supabase.table("transactions").insert(valid_records).execute()
+        return response.data or []
+
+    @classmethod
+    def parse_delete_query(cls, query_arg: str) -> tuple[str, str | None, str | None, str]:
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        query_arg = query_arg.strip().lower()
+        months = {
+            'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11, 'dec': 12, 'december': 12
+        }
+        if not query_arg:
+            return "all", None, None, "Recent Transactions"
+        parts = query_arg.split()
+        if re.match(r'^\d{4}$', query_arg):
+            year = int(query_arg)
+            return "range", f"{year}-01-01", f"{year}-12-31", f"Transactions in {year}"
+        if len(parts) == 1 and query_arg in months:
+            month_num = months[query_arg]
+            year = now_ist.year
+            last_day = calendar.monthrange(year, month_num)[1]
+            return "range", f"{year}-{month_num:02d}-01", f"{year}-{month_num:02d}-{last_day:02d}", f"Transactions in {calendar.month_name[month_num]} {year}"
+        return "all", None, None, "Recent Transactions"
+
+    @classmethod
+    def load_delete_session(cls, chat_id: int, query_arg: str = ""):
+        supabase = cls.get_client()
+        mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
+        query = supabase.table("transactions").select("*").eq("chat_id", chat_id)
+        if mode == "range":
+            query = query.gte("date", start_date).lte("date", end_date)
+        response = query.order("date", desc=True).order("id", desc=True).execute()
+        records = response.data or []
+        cls._delete_sessions[chat_id] = {"records": records, "title": title, "query_arg": query_arg}
+        cls._selections_cache[chat_id] = set()
+        return records, title
+
+    @classmethod
+    def get_cached_delete_view(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5, toggle_tx_id: int | None = None):
+        session = cls._delete_sessions.get(chat_id)
+        if not session or session.get("query_arg") != query_arg:
+            records, title = cls.load_delete_session(chat_id, query_arg)
+        else:
+            records = session["records"]
+            title = session["title"]
+        if toggle_tx_id is not None:
+            if chat_id not in cls._selections_cache:
+                cls._selections_cache[chat_id] = set()
+            if toggle_tx_id in cls._selections_cache[chat_id]:
+                cls._selections_cache[chat_id].remove(toggle_tx_id)
+            else:
+                cls._selections_cache[chat_id].add(toggle_tx_id)
+        total_records = len(records)
+        total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
+        if page >= total_pages and total_pages > 0:
+            page = max(0, total_pages - 1)
+        start_idx = page * page_size
+        paginated_records = records[start_idx:start_idx + page_size]
+        selected_ids = cls._selections_cache.get(chat_id, set())
+        return title, paginated_records, total_records, total_pages, selected_ids
+
+    @classmethod
+    def clear_user_selections(cls, chat_id: int):
+        if chat_id in cls._selections_cache:
+            cls._selections_cache[chat_id].clear()
+        if chat_id in cls._delete_sessions:
+            cls._delete_sessions.pop(chat_id, None)
+
+    @classmethod
+    def confirm_and_delete(cls, chat_id: int) -> int:
+        selected_ids = list(cls._selections_cache.get(chat_id, set()))
+        if not selected_ids:
+            return 0
+        supabase = cls.get_client()
+        del_resp = supabase.table("transactions").delete().in_("id", selected_ids).eq("chat_id", chat_id).execute()
+        cls.clear_user_selections(chat_id)
+        return len(del_resp.data or [])
+
+    @classmethod
+    def parse_date_range(cls, query_arg: str) -> tuple[str, str, str]:
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        today = now_ist.date()
+        query_arg = query_arg.strip().lower()
+        if not query_arg:
+            start = now_ist.replace(day=1).date().isoformat()
+            end = today.isoformat()
+            return start, end, f"Monthly Summary ({now_ist.strftime('%B %Y')})"
+        return start, end, "Summary"
+
+    @classmethod
+    def get_summary(cls, chat_id: int, query_arg: str = "") -> dict:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_date).lte("date", end_date).execute()
+        records = response.data or []
+        total_expense = sum(float(r["amount"]) for r in records if r["type"] == "expense")
+        total_income = sum(float(r["amount"]) for r in records if r["type"] == "income")
+        total_transfer = sum(float(r["amount"]) for r in records if r["type"] == "transfer")
+        categories = {}
+        for r in records:
+            if r["type"] == "expense":
+                cat = r["category"] or "Miscellaneous"
+                categories[cat] = categories.get(cat, 0.0) + float(r["amount"])
+        return {
+            "title": title, "total_expense": total_expense, "total_income": total_income,
+            "total_transfer": total_transfer, "net_balance": total_income - total_expense,
+            "categories": dict(sorted(categories.items(), key=lambda item: item[1], reverse=True)), "count": len(records)
+        }
+
+    @classmethod
+    def get_category_data_for_chart(cls, chat_id: int, query_arg: str = "") -> tuple[str, dict]:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).eq("type", "expense").gte("date", start_date).lte("date", end_date).execute()
+        records = response.data or []
+        categories = {}
+        for r in records:
+            cat = r["category"] or "Miscellaneous"
+            categories[cat] = categories.get(cat, 0.0) + float(r["amount"])
+        return title, dict(sorted(categories.items(), key=lambda item: item[1], reverse=True))
+
+    @classmethod
+    def get_transactions_for_export(cls, chat_id: int, query_arg: str = "") -> tuple[str, str, list]:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_date).lte("date", end_date).order("date", desc=True).execute()
+        return f"PFM_Export_{start_date}_to_{end_date}.csv", title, (response.data or [])
+
+    @classmethod
+    def get_category_drilldown_data(cls, chat_id: int, category_query: str) -> tuple[str, list]:
+        supabase = cls.get_client()
+        category_query = category_query.strip().lower()
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        start_of_month = now_ist.replace(day=1).date().isoformat()
+        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_of_month).order("date", desc=True).execute()
+        records = response.data or []
+        filtered = [r for r in records if category_query in (r.get("category") or "").lower()]
+        return category_query.capitalize(), filtered
+
     @classmethod
     def set_user_salary(cls, chat_id: int, base_salary: float) -> dict:
         supabase = cls.get_client()
@@ -32,7 +218,6 @@
         supabase = cls.get_client()
         s_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else datetime.now().date()
         
-        # Calculate EMI using reducing balance formula
         if interest_rate == 0:
             emi_amt = principal / tenure_months
         else:
@@ -40,12 +225,11 @@
             emi_amt = principal * monthly_rate * ((1 + monthly_rate) ** tenure_months) / (((1 + monthly_rate) ** tenure_months) - 1)
         emi_amt = round(emi_amt, 2)
 
-        # 1. Insert Loan Record
         loan_record = {
             "chat_id": chat_id,
             "name": name,
-            "lender_type": lender_type, # 'bank' or 'family'
-            "priority": priority,       # 'high', 'medium', 'low'
+            "lender_type": lender_type,
+            "priority": priority,
             "principal": principal,
             "interest_rate": interest_rate,
             "tenure_months": tenure_months,
@@ -61,7 +245,6 @@
         created_loan = loan_res.data[0]
         loan_id = created_loan["id"]
 
-        # 2. Automatically generate monthly installment schedule
         installments = []
         curr_date = s_date
         for i in range(tenure_months):
@@ -73,7 +256,6 @@
                 "emi_amount": emi_amt,
                 "status": "pending"
             })
-            # Increment month safely
             if curr_date.month == 12:
                 curr_date = curr_date.replace(year=curr_date.year + 1, month=1)
             else:
@@ -83,20 +265,19 @@
         return created_loan
 
     @classmethod
-    def pay_loan_installment_by_month(cls, chat_id: int, loan_id: int, installment_month: str) -> dict:
-        """
-        Marks a specific month's EMI as paid, reduces remaining loan balance, 
-        and logs it as an expense transaction in the general ledger.
-        """
+    def get_user_loans(cls, chat_id: int) -> list:
         supabase = cls.get_client()
-        
-        # Verify loan ownership
+        res = supabase.table("loans").select("*").eq("chat_id", chat_id).execute()
+        return res.data or []
+
+    @classmethod
+    def pay_loan_installment_by_month(cls, chat_id: int, loan_id: int, installment_month: str) -> dict:
+        supabase = cls.get_client()
         loan_res = supabase.table("loans").select("*").eq("id", loan_id).eq("chat_id", chat_id).execute()
         if not loan_res.data:
             raise ValueError("Loan not found.")
         loan = loan_res.data[0]
 
-        # Verify installment exists and is pending
         inst_res = supabase.table("loan_installments").select("*").eq("loan_id", loan_id).eq("installment_month", installment_month).execute()
         if not inst_res.data:
             raise ValueError(f"No installment found for month {installment_month}.")
@@ -108,22 +289,18 @@
         emi_amt = float(installment["emi_amount"])
         new_remaining = max(0.0, float(loan["remaining_amount"]) - emi_amt)
         new_status = "closed" if new_remaining == 0 else "active"
-
         today_str = datetime.now().date().isoformat()
 
-        # 1. Update Installment Status
         supabase.table("loan_installments").update({
             "status": "paid",
             "paid_date": today_str
         }).eq("id", installment["id"]).execute()
 
-        # 2. Update Loan Remaining Principal & Status
         supabase.table("loans").update({
             "remaining_amount": new_remaining,
             "status": new_status
         }).eq("id", loan_id).execute()
 
-        # 3. Log EMI payment as a standard expense in the main ledger
         tx_record = {
             "chat_id": chat_id,
             "description": f"EMI: {loan['name']} ({installment_month})",
@@ -144,34 +321,23 @@
 
     @classmethod
     def get_monthly_budget_guardrail(cls, chat_id: int, year_month: str) -> dict:
-        """
-        Computes Salary - Total EMIs due for the month = Safe House Expense Budget.
-        Checks current month's house expenses against this buffer.
-        """
         supabase = cls.get_client()
-        
-        # 1. Get base salary
         base_salary = cls.get_user_salary(chat_id)
 
-        # 2. Get extra variable incomes logged for this specific month
         incomes_res = supabase.table("incomes").select("amount").eq("chat_id", chat_id).gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
         extra_income = sum(float(inc["amount"]) for inc in (incomes_res.data or []))
         total_inflow = base_salary + extra_income
 
-        # 3. Get total mandatory EMIs scheduled for this month
         inst_res = supabase.table("loan_installments").select("emi_amount, status").eq("chat_id", chat_id).eq("installment_month", year_month).execute()
         installments = inst_res.data or []
         total_emis = sum(float(inst["emi_amount"]) for inst in installments)
         paid_emis = sum(float(inst["emi_amount"]) for inst in installments if inst["status"] == "paid")
 
-        # 4. Calculate House Expense Buffer
         safe_house_budget = total_inflow - total_emis
 
-        # 5. Get actual house expenses spent so far this month
         tx_res = supabase.table("transactions").select("amount, category").eq("chat_id", chat_id).eq("type", "expense").neq("category", "Loans & EMIs").gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
         actual_house_spent = sum(float(tx["amount"]) for tx in (tx_res.data or []))
 
-        # 6. Budget Warning Level Calculation
         percentage_used = (actual_house_spent / safe_house_budget * 100) if safe_house_budget > 0 else 100.0
 
         warning_status = "safe"
