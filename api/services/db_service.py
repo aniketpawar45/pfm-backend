@@ -441,3 +441,24 @@ class DBService:
         actual_house_spent = sum(float(tx["amount"]) for tx in (tx_res.data or []))
 
         percentage_used = (actual_house_spent / safe_house_budget * 100)
+
+warning_status = "safe"
+        if percentage_used >= 100:
+            warning_status = "breached"
+        elif percentage_used >= 90:
+            warning_status = "critical"
+        elif percentage_used >= 75:
+            warning_status = "warning"
+
+        return {
+            "year_month": year_month,
+            "base_salary": base_salary,
+            "extra_income": extra_income,
+            "total_inflow": total_inflow,
+            "total_emis": total_emis,
+            "paid_emis": paid_emis,
+            "safe_house_budget": safe_house_budget,
+            "actual_house_spent": actual_house_spent,
+            "percentage_used": round(percentage_used, 1),
+            "warning_status": warning_status
+        }
