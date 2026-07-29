@@ -18,9 +18,8 @@ A high-performance, intelligent Personal Finance Management (PFM) Telegram bot b
 
 The system enforces strict financial discipline by locking away mandatory monthly debt obligations before allowing lifestyle spending to be tracked:
 
-$$\text{Total Monthly Inflow} = \text{Base Salary} + \text{Variable Extra Incomes}$$
-
-$$\text{Safe House Budget} = \text{Total Monthly Inflow} - \text{Mandatory EMIs for the Month}$$
+* **Total Monthly Inflow** = Base Salary + Variable Extra Incomes
+* **Safe House Budget** = Total Monthly Inflow - Mandatory EMIs for the Month
 
 The bot continuously evaluates your lifestyle spending against your Safe House Budget and triggers warnings at specific thresholds:
 * 🟢 **Safe:** Under 75% utilized
