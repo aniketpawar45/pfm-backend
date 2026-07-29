@@ -42,11 +42,14 @@ class TelegramService:
                 # Check if any item in the list is missing an amount
                 missing_amount_items = [item for item in valid_items if item.get("amount") is None]
                 if missing_amount_items:
-                    item_desc = missing_amount_items[0].get("description", "transaction")
+                    item_desc = missing_amount_items[0].get("description") or "transaction"
                     await cls.send_message(chat_id, f"⚠️ I noticed an item ('{item_desc}'), but the amount is missing. Please specify how much.")
                     return
 
-                formatted_list = "\n".join([f"• <b>{item.get('description')}</b>: ₹{item.get('amount')} ({item.get('type', 'expense')})" for item in valid_items])
+                formatted_list = "\n".join([
+                    f"• <b>{item.get('description') or 'Miscellaneous'}</b>: ₹{item.get('amount')} ({item.get('type', 'expense')})" 
+                    for item in valid_items
+                ])
                 await cls.send_message(chat_id, f"✅ Successfully processed <b>{len(valid_items)}</b> items as bulk entries!\n\n{formatted_list}")
                 return
 
@@ -59,6 +62,10 @@ class TelegramService:
                 if parsed_data.get("amount") is None:
                     await cls.send_message(chat_id, "⚠️ I noticed a transaction, but the amount is missing. Please specify how much (e.g., 'Paid 500 for lunch').")
                     return
+
+                # Fallback description if null
+                if not parsed_data.get("description"):
+                    parsed_data["description"] = "Miscellaneous"
 
                 await cls.send_message(chat_id, f"✅ Successfully processed transaction!\n<pre>{parsed_data}</pre>")
                 return
