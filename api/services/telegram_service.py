@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import httpx
 import matplotlib
 matplotlib.use('Agg')
@@ -137,6 +138,59 @@ class TelegramService:
             await cls.send_message(chat_id, f"❌ <b>Error generating chart</b>\n<code>{str(e)}</code>")
 
     @classmethod
+    async def send_csv_export(cls, chat_id: int, query_arg: str = ""):
+        try:
+            filename, title, records = DBService.get_transactions_for_export(chat_id, query_arg=query_arg)
+            if not records:
+                await cls.send_message(chat_id, f"📁 <b>Export Failed</b>\nNo transactions found for export.")
+                return
+                
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["ID", "Date", "Type", "Category", "Description", "Amount (INR)", "Chat ID"])
+            for r in records:
+                writer.writerow([r.get("id"), r.get("date"), r.get("type"), r.get("category"), r.get("description"), r.get("amount"), r.get("chat_id")])
+            
+            csv_bytes = output.getvalue().encode('utf-8')
+            buf = io.BytesIO(csv_bytes)
+            buf.seek(0)
+            
+            url = f"{cls.get_api_url()}/sendDocument"
+            async with httpx.AsyncClient() as client:
+                files = {"document": (filename, buf.read(), "text/csv")}
+                data = {
+                    "chat_id": chat_id,
+                    "caption": f"📁 <b>CSV Transaction Export</b>\n{title}",
+                    "parse_mode": "HTML"
+                }
+                await client.post(url, data=data, files=files)
+        except Exception as e:
+            await cls.send_message(chat_id, f"❌ <b>Error exporting CSV</b>\n<code>{str(e)}</code>")
+
+    @classmethod
+    async def send_drilldown_report(cls, chat_id: int, category_query: str):
+        try:
+            cat_name, records = DBService.get_category_drilldown_data(chat_id, category_query)
+            if not records:
+                await cls.send_message(chat_id, f"🔍 <b>Category Drill-down: {cat_name}</b>\nNo transactions found for this category this month.")
+                return
+                
+            total_amt = sum(float(r["amount"]) for r in records if r["type"] == "expense")
+            items_str = "\n".join([
+                f"  • {r['date']} - <b>{r['description']}</b>: ₹{float(r['amount']):,.2f}" for r in records
+            ])
+            
+            report = (
+                f"🔍 <b>Drill-down: {cat_name} (This Month)</b>\n\n"
+                f"{items_str}\n\n"
+                f"💰 <b>Total Spent on {cat_name}:</b> ₹{total_amt:,.2f}\n"
+                f"<i>Total items: {len(records)}</i>"
+            )
+            await cls.send_message(chat_id, report)
+        except Exception as e:
+            await cls.send_message(chat_id, f"❌ <b>Error generating drill-down</b>\n<code>{str(e)}</code>")
+
+    @classmethod
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
         msg_id = await cls.send_message(
             chat_id, 
@@ -267,18 +321,35 @@ class TelegramService:
 
         text_lower = text.lower()
         
-        # Summary Command Handler
+        # 1. Summary Reports
         if text_lower.startswith("/summary") or text_lower.startswith("/report") or text_lower.startswith("/month"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_summary_report(chat_id, query_arg=query_arg)
             return
 
-        # Chart Command Handler
+        # 2. Visual Charts
         if text_lower.startswith("/chart") or text_lower.startswith("/graph"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_chart_report(chat_id, query_arg=query_arg)
+            return
+
+        # 3. CSV Data Export
+        if text_lower.startswith("/export") or text_lower.startswith("/csv"):
+            parts = text.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            await cls.send_csv_export(chat_id, query_arg=query_arg)
+            return
+
+        # 4. Category Drill-down
+        if text_lower.startswith("/drilldown") or text_lower.startswith("/category"):
+            parts = text.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            if not query_arg:
+                await cls.send_message(chat_id, "⚠️ Please specify a category name, e.g., `/drilldown food`")
+                return
+            await cls.send_drilldown_report(chat_id, category_query=query_arg)
             return
 
         audio_bytes = None
