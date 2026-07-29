@@ -102,7 +102,7 @@ class TelegramService:
             if page == 0:
                 DBService.clear_user_selections(chat_id)
                 
-            title, records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
+            title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg=query_arg, page=page, page_size=5)
             
             if total_records == 0:
                 await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found matching your query.")
@@ -124,10 +124,9 @@ class TelegramService:
     @classmethod
     async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
         try:
-            if toggle_tx_id is not None:
-                DBService.toggle_selection(chat_id, toggle_tx_id)
-                
-            title, records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
+            title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(
+                chat_id, query_arg=query_arg, page=page, page_size=5, toggle_tx_id=toggle_tx_id
+            )
             
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
@@ -296,8 +295,7 @@ class TelegramService:
                 page = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 else ""
                 
-                # Instant acknowledgment toast for zero perceived delay
-                await cls.answer_callback_query(query_id, "Toggled")
+                await cls.answer_callback_query(query_id, "")
                 if message_id:
                     await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=tx_id)
                 return
@@ -307,7 +305,7 @@ class TelegramService:
                 page = int(parts[1])
                 query_arg = parts[2] if len(parts) > 2 else ""
                 
-                await cls.answer_callback_query(query_id, f"Page {page + 1}")
+                await cls.answer_callback_query(query_id, "")
                 if message_id:
                     await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=None)
                 return
@@ -325,7 +323,7 @@ class TelegramService:
 
             if data == "del_cancel":
                 DBService.clear_user_selections(chat_id)
-                await cls.answer_callback_query(query_id, "Deletion cancelled")
+                await cls.answer_callback_query(query_id, "Cancelled")
                 if message_id:
                     await cls.edit_message(chat_id, message_id, "❌ <b>Deletion cancelled.</b>")
                 return
