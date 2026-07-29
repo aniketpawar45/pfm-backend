@@ -76,10 +76,8 @@ class TelegramService:
             t_type = r.get("type", "expense").capitalize()
             
             btn_text = f"{icon} {date} | {desc} (₹{amt:,.2f}) [{t_type}]"
-            # Format: del_t:{tx_id}:{page}:{query_arg}
             keyboard.append([{"text": btn_text, "callback_data": f"del_t:{tx_id}:{page}:{query_arg}"}])
             
-        # Pagination Row
         nav_row = []
         if page > 0:
             nav_row.append({"text": "⬅️ Prev", "callback_data": f"del_pg:{page - 1}:{query_arg}"})
@@ -91,8 +89,7 @@ class TelegramService:
             
         keyboard.append(nav_row)
         
-        # Action Row
-        count, _ = DBService.get_selected_totals(chat_id=records[0]["chat_id"] if records else 0)
+        count = len(selected_ids)
         action_row = [
             {"text": f"🗑️ Confirm ({count})", "callback_data": "del_confirm"},
             {"text": "❌ Cancel", "callback_data": "del_cancel"}
@@ -106,13 +103,12 @@ class TelegramService:
             if page == 0:
                 DBService.clear_user_selections(chat_id)
                 
-            title, records, total_records, total_pages = DBService.get_delete_candidates_paginated(chat_id, query_arg=query_arg, page=page, page_size=5)
+            title, records, total_records, total_pages, selected_ids, count, total_amt = DBService.get_delete_view_data(chat_id, query_arg=query_arg, page=page, page_size=5)
             
             if total_records == 0:
                 await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found matching your query.")
                 return
 
-            count, total_amt = DBService.get_selected_totals(chat_id)
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -121,16 +117,15 @@ class TelegramService:
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
             )
-            markup = cls.build_delete_keyboard(records, DBService.get_user_selections(chat_id), page, total_pages, query_arg)
+            markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
             await cls.send_message(chat_id, text, reply_markup=markup)
         except Exception as e:
             await cls.send_message(chat_id, f"❌ <b>Error opening delete menu</b>\n<code>{str(e)}</code>")
 
     @classmethod
-    async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0):
+    async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
         try:
-            title, records, total_records, total_pages = DBService.get_delete_candidates_paginated(chat_id, query_arg=query_arg, page=page, page_size=5)
-            count, total_amt = DBService.get_selected_totals(chat_id)
+            title, records, total_records, total_pages, selected_ids, count, total_amt = DBService.get_delete_view_data(chat_id, query_arg=query_arg, page=page, page_size=5, toggle_tx_id=toggle_tx_id)
             
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
@@ -140,7 +135,7 @@ class TelegramService:
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
             )
-            markup = cls.build_delete_keyboard(records, DBService.get_user_selections(chat_id), page, total_pages, query_arg)
+            markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
             await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
         except Exception as e:
             print(f"Failed to update delete menu: {str(e)}")
@@ -294,28 +289,24 @@ class TelegramService:
                 return
 
             if data.startswith("del_t:"):
-                # format: del_t:{tx_id}:{page}:{query_arg}
                 parts = data.split(":", 3)
                 tx_id = int(parts[1])
                 page = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 else ""
                 
-                DBService.toggle_user_selection(chat_id, tx_id)
-                await cls.answer_callback_query(query_id, "Selection updated")
-                
+                await cls.answer_callback_query(query_id, "Updated selection")
                 if message_id:
-                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page)
+                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=tx_id)
                 return
 
             if data.startswith("del_pg:"):
-                # format: del_pg:{page}:{query_arg}
                 parts = data.split(":", 2)
                 page = int(parts[1])
                 query_arg = parts[2] if len(parts) > 2 else ""
                 
                 await cls.answer_callback_query(query_id, f"Page {page + 1}")
                 if message_id:
-                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page)
+                    await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=None)
                 return
 
             if data == "del_confirm":
