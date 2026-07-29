@@ -1,96 +1,51 @@
-import json
 import os
-from datetime import datetime, timezone, timedelta
-from openai import OpenAI
+import json
+from groq import Groq
 from api.core.config import settings
 
 class AIService:
     @classmethod
-    def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
-        for env_var in ["OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_API_KEY"]:
-            os.environ.pop(env_var, None)
-
-        api_key = settings.GROQ_API_KEY.strip("'\" ") if settings.GROQ_API_KEY else ""
+    def get_client(cls):
+        api_key = getattr(settings, "GROQ_API_KEY", None) or os.getenv("GROQ_API_KEY", "")
+        api_key = str(api_key).strip(" '\"")
         if not api_key:
-            raise ValueError("GROQ_API_KEY is missing or empty.")
+            raise ValueError("GROQ_API_KEY is missing from environment variables.")
+        return Groq(api_key=api_key)
 
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.groq.com/openai/v1"
-        )
+    @classmethod
+    def parse_transaction(cls, text_input: str = None, audio_bytes: bytes = None) -> dict | list:
+        client = cls.get_client()
+        content_to_parse = text_input or ""
         
-        if audio_bytes:
-            try:
-                audio_file = ("voice_note.ogg", audio_bytes)
-                transcript = client.audio.transcriptions.create(
-                    model="whisper-large-v3",
-                    file=audio_file,
-                    response_format="text"
-                )
-                text_input = transcript
-            except Exception as e:
-                raise ValueError(f"Failed to transcribe audio: {str(e)}")
-
-        IST = timezone(timedelta(hours=5, minutes=30))
-        now_ist = datetime.now(IST)
-        current_date_ist = now_ist.date().isoformat()
-        current_year = now_ist.year
+        prompt = f"""
+        You are a precise financial data extraction assistant. Analyze the user input and extract financial transaction details.
+        The input can be an expense, an income/earning (e.g., "received 10000 extra", "got a bonus of 5000", "earned from freelance"), or a transfer.
+        If there are multiple transactions in the input, return a JSON array of objects. If single, return a single JSON object.
+        Each object must follow this strict schema:
+        {{
+            "is_transaction": true/false,
+            "description": "Short clear description",
+            "amount": 0.00,
+            "type": "expense" or "income" or "transfer",
+            "category": "Food" or "Extra Income" or "Bonus" or "Salary" or "Freelance" etc.,
+            "date": "YYYY-MM-DD"
+        }}
+        Input: "{content_to_parse}"
+        Return ONLY valid JSON.
+        """
         
-        system_instruction = (
-            f"You are an AI financial assistant that parses natural language, itemized lists, or text into financial transactions in Indian Rupees (INR).\n"
-            f"Today's date in IST is {current_date_ist} (Current Year: {current_year}).\n"
-            f"CRITICAL RULES:\n"
-            f"1. LISTS/BREAKDOWNS: If the user provides an itemized list or grocery list, parse every single line item into its own distinct transaction object and return them together inside a JSON array (bulk operation).\n"
-            f"2. MULTI-ACTIONS/LISTS: Always return a JSON array of transaction objects if there are multiple items or distinct actions described. Return a single JSON object only for a single isolated transaction.\n"
-            f"3. Each transaction object must contain strictly these keys:\n"
-            f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
-            f"   - amount: float or null (numeric value only, exact price for that specific item, no currency symbols)\n"
-            f"   - type: string ('expense', 'income', or 'transfer') or null\n"
-            f"   - category: string or null (e.g., 'Groceries', 'Food', 'Utilities', 'Transfer', 'Salary', 'Shopping', 'Entertainment', 'Miscellaneous')\n"
-            f"   - description: string or null (clean description of the specific item, e.g., 'Coffee')\n"
-            f"   - date: string or null (YYYY-MM-DD format. CRITICAL: Always use the current year {current_year} unless an explicit year is provided by the user. Infer relative or partial dates based on today's date).\n"
-            f"Return ONLY valid JSON with no markdown wrapping if possible."
-        )
-
-        models_config = [
-            {"model": "llama-3.3-70b-versatile", "max_tokens": 8192},
-            {"model": "llama-3.1-8b-instant", "max_tokens": 2048}
-        ]
-        
-        last_exception = None
-
-        for config in models_config:
-            model_name = config["model"]
-            max_tok = config["max_tokens"]
-            try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": system_instruction},
-                        {"role": "user", "content": text_input or ""}
-                    ],
-                    temperature=0.0,
-                    max_tokens=max_tok
-                )
-                
-                result_text = response.choices[0].message.content.strip()
-                if result_text.startswith("```json"):
-                    result_text = result_text[7:]
-                if result_text.startswith("```"):
-                    result_text = result_text[3:]
-                if result_text.endswith("```"):
-                    result_text = result_text[:-3]
-                    
-                data = json.loads(result_text.strip())
-                return data
-            except Exception as e:
-                last_exception = e
-                error_str = str(e).lower()
-                if any(code in error_str for code in ["429", "413", "rate limit", "tokens per day", "tokens per minute", "too large"]):
-                    continue
-                else:
-                    if model_name == models_config[-1]["model"]:
-                        raise ValueError(f"AI processing failed across all models: {str(e)}")
-                    continue
-        
-        raise ValueError(f"Groq API rate limit or capacity reached across all available models. Details: {str(last_exception)}")
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            raw_text = response.choices[0].message.content.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3]
+            return json.loads(raw_text.strip())
+        except Exception as e:
+            print(f"AI parsing error: {str(e)}")
+            return {"is_transaction": False, "description": text_input, "amount": 0.0, "type": "expense", "category": "Miscellaneous"}
