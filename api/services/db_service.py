@@ -2,6 +2,7 @@ import os
 import re
 import csv
 import io
+import math
 import calendar
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
@@ -62,7 +63,7 @@ class DBService:
         }
 
         if not query_arg:
-            return "last_5", None, None, "Last 5 Transactions"
+            return "all", None, None, "Recent Transactions"
 
         parts = query_arg.split()
 
@@ -104,21 +105,31 @@ class DBService:
                 except ValueError:
                     pass
 
-        return "last_5", None, None, "Last 5 Transactions"
+        return "all", None, None, "Recent Transactions"
 
     @classmethod
-    def get_delete_candidates(cls, chat_id: int, query_arg: str = "") -> tuple[str, list]:
+    def get_delete_candidates_paginated(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int]:
         supabase = cls.get_client()
         mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         
         query = supabase.table("transactions").select("*").eq("chat_id", chat_id)
-        
         if mode == "range":
             query = query.gte("date", start_date).lte("date", end_date)
             
-        response = query.order("date", desc=True).limit(20).execute()
-        records = response.data or []
-        return title, records
+        response = query.order("date", desc=True).order("id", desc=True).execute()
+        all_records = response.data or []
+        
+        total_records = len(all_records)
+        total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
+        
+        if page >= total_pages:
+            page = max(0, total_pages - 1)
+            
+        start_idx = page * page_size
+        end_idx = start_idx + page_size
+        paginated_records = all_records[start_idx:end_idx]
+        
+        return title, paginated_records, total_records, total_pages
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
@@ -155,9 +166,15 @@ class DBService:
         return [row["transaction_id"] for row in (sel_resp.data or [])]
 
     @classmethod
-    def get_selected_totals(cls, chat_id: int, records: list) -> tuple[int, float]:
+    def get_selected_totals(cls, chat_id: int) -> tuple[int, float]:
+        supabase = cls.get_client()
         selected_ids = cls.get_user_selections(chat_id)
-        total_amt = sum(float(r["amount"]) for r in records if r["id"] in selected_ids)
+        if not selected_ids:
+            return 0, 0.0
+            
+        resp = supabase.table("transactions").select("amount").in_("id", selected_ids).eq("chat_id", chat_id).execute()
+        records = resp.data or []
+        total_amt = sum(float(r["amount"]) for r in records)
         return len(selected_ids), total_amt
 
     @classmethod
