@@ -15,25 +15,21 @@ class TelegramService:
         token = getattr(settings, "TELEGRAM_BOT_TOKEN", None)
         if not token:
             token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        
         if isinstance(token, str):
             token = token.strip(" '\"")
-            
         if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN environment variable is missing or empty.")
-            
         return f"https://api.telegram.org/bot{token}"
 
     @classmethod
-    async def send_message(cls, chat_id: int, text: str) -> int | None:
+    async def send_message(cls, chat_id: int, text: str, reply_markup: dict = None) -> int | None:
         url = f"{cls.get_api_url()}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.post(url, json={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "HTML"
-                })
+                response = await client.post(url, json=payload)
                 data = response.json()
                 if data.get("ok"):
                     return data["result"]["message_id"]
@@ -42,37 +38,86 @@ class TelegramService:
         return None
 
     @classmethod
-    async def edit_message(cls, chat_id: int, message_id: int, text: str):
+    async def edit_message(cls, chat_id: int, message_id: int, text: str, reply_markup: dict = None):
         if not message_id:
             return
         url = f"{cls.get_api_url()}/editMessageText"
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        else:
+            payload["reply_markup"] = {"inline_keyboard": []}
         async with httpx.AsyncClient() as client:
             try:
-                await client.post(url, json={
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "text": text,
-                    "parse_mode": "HTML"
-                })
+                await client.post(url, json=payload)
             except Exception as e:
                 print(f"Failed to edit Telegram message: {str(e)}")
+
+    @classmethod
+    async def answer_callback_query(cls, callback_query_id: str, text: str = ""):
+        url = f"{cls.get_api_url()}/answerCallbackQuery"
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(url, json={"callback_query_id": callback_query_id, "text": text})
+            except Exception as e:
+                print(f"Failed to answer callback query: {str(e)}")
+
+    @classmethod
+    def build_delete_keyboard(cls, records: list, selected_ids: list) -> dict:
+        keyboard = []
+        for r in records:
+            tx_id = r["id"]
+            is_selected = tx_id in selected_ids
+            
+            # Color coding & icons for identification
+            icon = "🟢 [SELECTED]" if is_selected else "⚪ [Tap to Select]"
+            desc = r.get("description") or "Misc"
+            amt = float(r.get("amount", 0))
+            date = r.get("date")
+            t_type = r.get("type", "expense").capitalize()
+            
+            btn_text = f"{icon} {date} | {desc} (₹{amt:,.2f}) [{t_type}]"
+            keyboard.append([{"text": btn_text, "callback_data": f"del_toggle_{tx_id}"}])
+            
+        count = len(selected_ids)
+        control_row = [
+            {"text": f"🗑️ Confirm Delete ({count})", "callback_data": "del_confirm"},
+            {"text": "❌ Cancel", "callback_data": "del_cancel"}
+        ]
+        keyboard.append(control_row)
+        return {"inline_keyboard": keyboard}
+
+    @classmethod
+    async def send_delete_menu(cls, chat_id: int, query_arg: str = ""):
+        try:
+            DBService.clear_user_selections(chat_id)
+            title, records = DBService.get_delete_candidates(chat_id, query_arg=query_arg)
+            
+            if not records:
+                await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found matching your query.")
+                return
+
+            text = (
+                f"🗑️ <b>Delete Manager — {title}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🟢 = <b>Selected for Deletion</b>\n"
+                f"⚪ = <b>Unselected</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Tap any item below to toggle its selection state.</i>"
+            )
+            markup = cls.build_delete_keyboard(records, [])
+            await cls.send_message(chat_id, text, reply_markup=markup)
+        except Exception as e:
+            await cls.send_message(chat_id, f"❌ <b>Error opening delete menu</b>\n<code>{str(e)}</code>")
 
     @classmethod
     async def send_summary_report(cls, chat_id: int, query_arg: str = ""):
         try:
             summary = DBService.get_summary(chat_id, query_arg=query_arg)
-            
             if summary["count"] == 0:
-                await cls.send_message(
-                    chat_id, 
-                    f"📊 <b>{summary['title']}</b>\n\nNo transactions logged for this period!"
-                )
+                await cls.send_message(chat_id, f"📊 <b>{summary['title']}</b>\n\nNo transactions logged for this period!")
                 return
-
-            cat_breakdown = "\n".join([
-                f"  • {cat}: ₹{amt:,.2f}" for cat, amt in summary["categories"].items()
-            ]) or "  • None"
-
+            cat_breakdown = "\n".join([f"  • {cat}: ₹{amt:,.2f}" for cat, amt in summary["categories"].items()]) or "  • None"
             report = (
                 f"📊 <b>{summary['title']}</b>\n\n"
                 f"📥 <b>Total Income:</b> ₹{summary['total_income']:,.2f}\n"
@@ -90,50 +135,30 @@ class TelegramService:
     async def send_chart_report(cls, chat_id: int, query_arg: str = ""):
         try:
             title, categories = DBService.get_category_data_for_chart(chat_id, query_arg=query_arg)
-            
             if not categories:
-                await cls.send_message(
-                    chat_id, 
-                    f"📊 <b>{title}</b>\n\nNo expense records found to generate a chart!"
-                )
+                await cls.send_message(chat_id, f"📊 <b>{title}</b>\n\nNo expense records found to generate a chart!")
                 return
-
             labels = list(categories.keys())
             amounts = list(categories.values())
-
             plt.figure(figsize=(7, 7))
             plt.style.use('dark_background')
-            
             colors = ['#ff9999', '#66b3ff', '#99ff99', '#ffcc99', '#c2c2f0', '#ffb3e6', '#c4e1ff']
-            
             wedges, texts, autotexts = plt.pie(
-                amounts, 
-                labels=labels, 
-                autopct='%1.1f%%', 
-                startangle=140, 
-                colors=colors[:len(labels)],
-                wedgeprops=dict(width=0.4, edgecolor='w')
+                amounts, labels=labels, autopct='%1.1f%%', startangle=140,
+                colors=colors[:len(labels)], wedgeprops=dict(width=0.4, edgecolor='w')
             )
-            
             plt.setp(autotexts, size=10, weight="bold")
             plt.setp(texts, size=11)
             plt.title(f"Expense Breakdown\n{title}", fontsize=14, pad=20, weight='bold', color='white')
-
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches='tight', transparent=True)
             buf.seek(0)
             plt.close()
-
             url = f"{cls.get_api_url()}/sendPhoto"
             async with httpx.AsyncClient() as client:
                 files = {"photo": ("chart.png", buf.read(), "image/png")}
-                data = {
-                    "chat_id": chat_id,
-                    "caption": f"📊 <b>Visual Expense Breakdown — {title}</b>",
-                    "parse_mode": "HTML"
-                }
+                data = {"chat_id": chat_id, "caption": f"📊 <b>Visual Expense Breakdown — {title}</b>", "parse_mode": "HTML"}
                 await client.post(url, data=data, files=files)
-
         except Exception as e:
             await cls.send_message(chat_id, f"❌ <b>Error generating chart</b>\n<code>{str(e)}</code>")
 
@@ -144,25 +169,18 @@ class TelegramService:
             if not records:
                 await cls.send_message(chat_id, f"📁 <b>Export Failed</b>\nNo transactions found for export.")
                 return
-                
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow(["ID", "Date", "Type", "Category", "Description", "Amount (INR)", "Chat ID"])
             for r in records:
                 writer.writerow([r.get("id"), r.get("date"), r.get("type"), r.get("category"), r.get("description"), r.get("amount"), r.get("chat_id")])
-            
             csv_bytes = output.getvalue().encode('utf-8')
             buf = io.BytesIO(csv_bytes)
             buf.seek(0)
-            
             url = f"{cls.get_api_url()}/sendDocument"
             async with httpx.AsyncClient() as client:
                 files = {"document": (filename, buf.read(), "text/csv")}
-                data = {
-                    "chat_id": chat_id,
-                    "caption": f"📁 <b>CSV Transaction Export</b>\n{title}",
-                    "parse_mode": "HTML"
-                }
+                data = {"chat_id": chat_id, "caption": f"📁 <b>CSV Transaction Export</b>\n{title}", "parse_mode": "HTML"}
                 await client.post(url, data=data, files=files)
         except Exception as e:
             await cls.send_message(chat_id, f"❌ <b>Error exporting CSV</b>\n<code>{str(e)}</code>")
@@ -174,17 +192,11 @@ class TelegramService:
             if not records:
                 await cls.send_message(chat_id, f"🔍 <b>Category Drill-down: {cat_name}</b>\nNo transactions found for this category this month.")
                 return
-                
             total_amt = sum(float(r["amount"]) for r in records if r["type"] == "expense")
-            items_str = "\n".join([
-                f"  • {r['date']} - <b>{r['description']}</b>: ₹{float(r['amount']):,.2f}" for r in records
-            ])
-            
+            items_str = "\n".join([f"  • {r['date']} - <b>{r['description']}</b>: ₹{float(r['amount']):,.2f}" for r in records])
             report = (
-                f"🔍 <b>Drill-down: {cat_name} (This Month)</b>\n\n"
-                f"{items_str}\n\n"
-                f"💰 <b>Total Spent on {cat_name}:</b> ₹{total_amt:,.2f}\n"
-                f"<i>Total items: {len(records)}</i>"
+                f"🔍 <b>Drill-down: {cat_name} (This Month)</b>\n\n{items_str}\n\n"
+                f"💰 <b>Total Spent on {cat_name}:</b> ₹{total_amt:,.2f}\n<i>Total items: {len(records)}</i>"
             )
             await cls.send_message(chat_id, report)
         except Exception as e:
@@ -192,116 +204,39 @@ class TelegramService:
 
     @classmethod
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
-        msg_id = await cls.send_message(
-            chat_id, 
-            "🔄 <b>[25%]</b> Analyzing input & extracting financial data..."
-        )
-
+        msg_id = await cls.send_message(chat_id, "🔄 <b>[25%]</b> Analyzing input & extracting financial data...")
         try:
             if msg_id:
-                await cls.edit_message(
-                    chat_id, 
-                    msg_id, 
-                    "🔄 <b>[60%]</b> Processing items through AI model..."
-                )
-
+                await cls.edit_message(chat_id, msg_id, "🔄 <b>[60%]</b> Processing items through AI model...")
             parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
-            
             if msg_id:
-                await cls.edit_message(
-                    chat_id, 
-                    msg_id, 
-                    "🔄 <b>[90%]</b> Validating amounts & saving to Supabase ledger..."
-                )
-
-            DBService.save_transactions(chat_id, parsed_data)
+                await cls.edit_message(chat_id, msg_id, "🔄 <b>[90%]</b> Validating amounts & saving to Supabase ledger...")
+            saved_records = DBService.save_transactions(chat_id, parsed_data)
 
             if isinstance(parsed_data, list):
-                if not parsed_data:
+                if not parsed_data or not saved_records:
                     await cls.edit_message(chat_id, msg_id, "🤖 <b>No transactions found</b> in your message.")
                     return
-                
-                valid_items = [item for item in parsed_data if item.get("is_transaction", True)]
-                if not valid_items:
-                    await cls.edit_message(
-                        chat_id, 
-                        msg_id, 
-                        "🤖 <b>PFM Assistant</b>\nSend me expenses, income notes, or itemized lists to log them!"
-                    )
-                    return
-
-                missing_amount_items = [item for item in valid_items if item.get("amount") is None]
-                if missing_amount_items:
-                    item_desc = missing_amount_items[0].get("description") or "transaction"
-                    await cls.edit_message(
-                        chat_id, 
-                        msg_id, 
-                        f"⚠️ <b>Incomplete Entry Detected</b>\nI noticed an item ('<code>{item_desc}</code>'), but the amount is missing. Please specify how much."
-                    )
-                    return
-
-                if len(valid_items) == 1:
-                    item = valid_items[0]
-                    desc = item.get("description") or "Miscellaneous"
-                    amount = item.get("amount")
-                    t_type = item.get("type", "expense")
-                    t_category = item.get("category", "Miscellaneous")
-                    t_date = item.get("date", "Today")
-
-                    final_text = (
-                        f"✨ <b>Transaction Logged & Saved!</b>\n\n"
-                        f"🔹 <b>Description:</b> {desc}\n"
-                        f"💰 <b>Amount:</b> ₹{amount:,.2f}\n"
-                        f"📂 <b>Type:</b> {t_type.capitalize()}\n"
-                        f"🏷️ <b>Category:</b> {t_category}\n"
-                        f"📅 <b>Date:</b> {t_date}"
-                    )
-                    await cls.edit_message(chat_id, msg_id, final_text)
-                    return
-
-                formatted_list = "\n".join([
-                    f"• <b>{item.get('description') or 'Miscellaneous'}</b>: ₹{item.get('amount'):,.2f} <i>({item.get('type', 'expense')})</i>" 
-                    for item in valid_items
-                ])
-                
-                final_text = (
-                    f"✨ <b>Bulk Transactions Logged & Saved!</b>\n"
-                    f"<i>Processed & saved <b>{len(valid_items)}</b> items</i>\n\n"
-                    f"{formatted_list}"
-                )
+                formatted_list = "\n".join([f"• <b>{r.get('description')}</b>: ₹{r.get('amount'):,.2f} <i>({r.get('type')})</i>" for r in saved_records])
+                final_text = f"✨ <b>Bulk Transactions Logged & Saved!</b>\n<i>Processed & saved <b>{len(saved_records)}</b> items</i>\n\n{formatted_list}"
                 await cls.edit_message(chat_id, msg_id, final_text)
                 return
 
             if isinstance(parsed_data, dict):
-                if not parsed_data.get("is_transaction", True):
-                    await cls.edit_message(
-                        chat_id, 
-                        msg_id, 
-                        "🤖 <b>PFM Assistant</b>\nSend me expenses, income notes, or itemized lists to log them!"
-                    )
+                if not parsed_data.get("is_transaction", True) or not saved_records:
+                    await cls.edit_message(chat_id, msg_id, "🤖 <b>PFM Assistant</b>\nSend me expenses, income notes, or itemized lists to log them!")
                     return
-
-                if parsed_data.get("amount") is None:
-                    await cls.edit_message(chat_id, msg_id, "⚠️ <b>Amount Missing</b>")
-                    return
-
-                desc = parsed_data.get("description") or "Miscellaneous"
-                amount = parsed_data.get("amount")
-                t_type = parsed_data.get("type", "expense")
-                t_category = parsed_data.get("category", "Miscellaneous")
-                t_date = parsed_data.get("date", "Today")
-
+                record = saved_records[0]
                 final_text = (
                     f"✨ <b>Transaction Logged & Saved!</b>\n\n"
-                    f"🔹 <b>Description:</b> {desc}\n"
-                    f"💰 <b>Amount:</b> ₹{amount:,.2f}\n"
-                    f"📂 <b>Type:</b> {t_type.capitalize()}\n"
-                    f"🏷️ <b>Category:</b> {t_category}\n"
-                    f"📅 <b>Date:</b> {t_date}"
+                    f"🔹 <b>Description:</b> {record.get('description')}\n"
+                    f"💰 <b>Amount:</b> ₹{record.get('amount'):,.2f}\n"
+                    f"📂 <b>Type:</b> {record.get('type', 'expense').capitalize()}\n"
+                    f"🏷️ <b>Category:</b> {record.get('category')}\n"
+                    f"📅 <b>Date:</b> {record.get('date')}"
                 )
                 await cls.edit_message(chat_id, msg_id, final_text)
                 return
-            
         except Exception as e:
             error_msg = f"❌ <b>Error Occurred</b>\n<code>{str(e)}</code>"
             if msg_id:
@@ -311,6 +246,53 @@ class TelegramService:
 
     @classmethod
     async def process_update(cls, update: dict):
+        callback_query = update.get("callback_query")
+        if callback_query:
+            query_id = callback_query["id"]
+            data = callback_query.get("data", "")
+            message = callback_query.get("message")
+            chat_id = message["chat"]["id"] if message else callback_query["from"]["id"]
+            message_id = message["message_id"] if message else None
+
+            if data.startswith("del_toggle_"):
+                tx_id = int(data.replace("del_toggle_", ""))
+                selected_ids = DBService.toggle_user_selection(chat_id, tx_id)
+                await cls.answer_callback_query(query_id, "Selection updated")
+                
+                _, records = DBService.get_delete_candidates(chat_id, query_arg="")
+                markup = cls.build_delete_keyboard(records, selected_ids)
+                if message_id:
+                    count, total_amt = DBService.get_selected_totals(chat_id, records)
+                    text = (
+                        f"🗑️ <b>Delete Manager</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"🟢 = <b>Selected</b> ({count} items | ₹{total_amt:,.2f})\n"
+                        f"⚪ = <b>Unselected</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"<i>Tap items to select/deselect.</i>"
+                    )
+                    await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
+                return
+
+            if data == "del_confirm":
+                deleted_count = DBService.confirm_and_delete(chat_id)
+                await cls.answer_callback_query(query_id, f"Deleted {deleted_count} transactions")
+                if message_id:
+                    await cls.edit_message(
+                        chat_id, 
+                        message_id, 
+                        f"🗑️ <b>Transactions Deleted Successfully</b>\n<i>Removed {deleted_count} selected entries from your ledger.</i>"
+                    )
+                return
+
+            if data == "del_cancel":
+                DBService.clear_user_selections(chat_id)
+                await cls.answer_callback_query(query_id, "Deletion cancelled")
+                if message_id:
+                    await cls.edit_message(chat_id, message_id, "❌ <b>Deletion cancelled.</b>")
+                return
+            return
+
         message = update.get("message") or update.get("edited_message")
         if not message:
             return
@@ -321,28 +303,30 @@ class TelegramService:
 
         text_lower = text.lower()
         
-        # 1. Summary Reports
+        if text_lower.startswith("/delete") or text_lower.startswith("/remove"):
+            parts = text.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            await cls.send_delete_menu(chat_id, query_arg=query_arg)
+            return
+
         if text_lower.startswith("/summary") or text_lower.startswith("/report") or text_lower.startswith("/month"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_summary_report(chat_id, query_arg=query_arg)
             return
 
-        # 2. Visual Charts
         if text_lower.startswith("/chart") or text_lower.startswith("/graph"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_chart_report(chat_id, query_arg=query_arg)
             return
 
-        # 3. CSV Data Export
         if text_lower.startswith("/export") or text_lower.startswith("/csv"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
             await cls.send_csv_export(chat_id, query_arg=query_arg)
             return
 
-        # 4. Category Drill-down
         if text_lower.startswith("/drilldown") or text_lower.startswith("/category"):
             parts = text.split(maxsplit=1)
             query_arg = parts[1] if len(parts) > 1 else ""
