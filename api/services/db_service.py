@@ -9,6 +9,9 @@ from supabase import create_client
 from api.core.config import settings
 
 class DBService:
+    # In-memory cache for instant selection toggling (Zero DB writes on click)
+    _selections_cache = {}
+
     @classmethod
     def get_client(cls):
         url = getattr(settings, "SUPABASE_URL", None) or os.getenv("SUPABASE_URL", "")
@@ -106,7 +109,7 @@ class DBService:
         return "all", None, None, "Recent Transactions"
 
     @classmethod
-    def get_delete_page_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int, list]:
+    def get_delete_page_data(cls, chat_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[str, list, int, int, set]:
         supabase = cls.get_client()
         mode, start_date, end_date, title = cls.parse_delete_query(query_arg)
         
@@ -125,47 +128,35 @@ class DBService:
         start_idx = page * page_size
         paginated_records = all_records[start_idx:start_idx + page_size]
         
-        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-        selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
-        
-        return title, paginated_records, total_records, total_pages, selected_ids
+        if chat_id not in cls._selections_cache:
+            cls._selections_cache[chat_id] = set()
+            
+        return title, paginated_records, total_records, total_pages, cls._selections_cache[chat_id]
 
     @classmethod
-    def toggle_and_get_page(cls, chat_id: int, tx_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[list, int, int, list]:
-        supabase = cls.get_client()
-        mode, start_date, end_date, _ = cls.parse_delete_query(query_arg)
-        
-        # Single network roundtrip execution via PostgreSQL RPC
-        response = supabase.rpc("toggle_and_get_delete_view", {
-            "p_chat_id": chat_id,
-            "p_toggle_id": tx_id,
-            "p_page": page,
-            "p_page_size": page_size,
-            "p_start_date": start_date if mode == "range" else None,
-            "p_end_date": end_date if mode == "range" else None
-        }).execute()
-        
-        data = response.data or {}
-        return (
-            data.get("records", []) or [],
-            data.get("total_records", 0),
-            data.get("total_pages", 1),
-            data.get("selected_ids", []) or []
-        )
+    def toggle_selection(cls, chat_id: int, tx_id: int) -> set:
+        if chat_id not in cls._selections_cache:
+            cls._selections_cache[chat_id] = set()
+            
+        if tx_id in cls._selections_cache[chat_id]:
+            cls._selections_cache[chat_id].remove(tx_id)
+        else:
+            cls._selections_cache[chat_id].add(tx_id)
+            
+        return cls._selections_cache[chat_id]
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
-        supabase = cls.get_client()
-        supabase.table("user_selections").delete().eq("chat_id", chat_id).execute()
+        if chat_id in cls._selections_cache:
+            cls._selections_cache[chat_id].clear()
 
     @classmethod
     def confirm_and_delete(cls, chat_id: int) -> int:
-        supabase = cls.get_client()
-        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-        selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
+        selected_ids = list(cls._selections_cache.get(chat_id, set()))
         if not selected_ids:
             return 0
             
+        supabase = cls.get_client()
         del_resp = supabase.table("transactions")\
             .delete()\
             .in_("id", selected_ids)\
