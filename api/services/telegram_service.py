@@ -45,14 +45,12 @@ class TelegramService:
 
     @classmethod
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
-        # Step 1: Initialize progress feedback (25%)
         msg_id = await cls.send_message(
             chat_id, 
             "🔄 <b>[25%]</b> Analyzing input & extracting financial data..."
         )
 
         try:
-            # Step 2: Update progress for AI processing (60%)
             if msg_id:
                 await cls.edit_message(
                     chat_id, 
@@ -62,7 +60,6 @@ class TelegramService:
 
             parsed_data = AIService.parse_transaction(text_input=text_input, audio_bytes=audio_bytes)
             
-            # Step 3: Validation & formatting stage (90%)
             if msg_id:
                 await cls.edit_message(
                     chat_id, 
@@ -70,7 +67,7 @@ class TelegramService:
                     "🔄 <b>[90%]</b> Validating amounts & ledger formatting..."
                 )
 
-            # Handle bulk list items (JSON Array)
+            # Handle bulk list items or single items returned as lists
             if isinstance(parsed_data, list):
                 if not parsed_data:
                     await cls.edit_message(chat_id, msg_id, "🤖 <b>No transactions found</b> in your message.")
@@ -85,7 +82,6 @@ class TelegramService:
                     )
                     return
 
-                # Check if any item in the list is missing an amount
                 missing_amount_items = [item for item in valid_items if item.get("amount") is None]
                 if missing_amount_items:
                     item_desc = missing_amount_items[0].get("description") or "transaction"
@@ -96,6 +92,25 @@ class TelegramService:
                     )
                     return
 
+                # If list contains exactly 1 item, treat it as a single transaction view for cleaner UI
+                if len(valid_items) == 1:
+                    item = valid_items[0]
+                    desc = item.get("description") or "Miscellaneous"
+                    amount = item.get("amount")
+                    t_type = item.get("type", "expense")
+                    t_date = item.get("date", "Today")
+
+                    final_text = (
+                        f"✨ <b>Transaction Logged Successfully</b>\n\n"
+                        f"🔹 <b>Description:</b> {desc}\n"
+                        f"💰 <b>Amount:</b> ₹{amount:,.2f}\n"
+                        f"📂 <b>Type:</b> {t_type.capitalize()}\n"
+                        f"📅 <b>Date:</b> {t_date}"
+                    )
+                    await cls.edit_message(chat_id, msg_id, final_text)
+                    return
+
+                # Multiple items -> Bulk formatting
                 formatted_list = "\n".join([
                     f"• <b>{item.get('description') or 'Miscellaneous'}</b>: ₹{item.get('amount'):,.2f} <i>({item.get('type', 'expense')})</i>" 
                     for item in valid_items
@@ -127,7 +142,6 @@ class TelegramService:
                     )
                     return
 
-                # Fallback description if null
                 desc = parsed_data.get("description") or "Miscellaneous"
                 amount = parsed_data.get("amount")
                 t_type = parsed_data.get("type", "expense")
