@@ -68,18 +68,29 @@ async def telegram_webhook(request: Request):
         if text_stripped.startswith("/start"):
             welcome_msg = (
                 "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
-                "I help you manage debts, automate budget guardrails, and track expenses effortlessly.\n\n"
-                "**Quick Start Commands:**\n"
-                "• `/setsalary [amount]` - Set your baseline monthly salary\n"
-                "• `/budget` - View your Safe House Budget & guardrails\n"
-                "• `/addloan Name | bank/family | high/low | Principal | Interest% | Months` - Add a loan\n"
-                "• `/loans` - View active liabilities & amortization status\n"
-                "• `/summary` or `/report` - View monthly financial breakdown\n"
-                "• `/statistics` - View deep analytics & spending metrics\n"
-                "• `/chart` - View expense category pie chart\n"
-                "• `/export` - Download CSV transaction report\n"
-                "• `/delete` - Manage and delete transactions\n\n"
-                "Or simply type naturally (e.g., *'Paid 500 for lunch'* or *'I paid 10k emi to ICICI'*)."
+                "Your intelligent financial co-pilot for automated budgeting, debt tracking, and expense logging.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚙️ **SETUP & BUDGETING**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• `/setsalary [amount]` — Set monthly base salary\n"
+                "• `/budget` — Check Safe House Budget & guardrails\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "💳 **DEBT & LOAN MANAGEMENT**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• `/addloan` — Add new loan & payment schedule\n"
+                "• `/loans` — View active liabilities & amortization\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📊 **REPORTS & ANALYTICS**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• `/summary` or `/report` — Monthly financial breakdown\n"
+                "• `/statistics` — Deep analytics & spending metrics\n"
+                "• `/chart` — Visual expense category pie chart\n"
+                "• `/export` — Download full CSV transaction report\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🗑️ **TRANSACTION CONTROL**\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "• `/delete` — Interactive paginated transaction manager\n\n"
+                "💡 **Pro Tip:** You can also type naturally! *(e.g., 'Paid ₹500 for lunch' or paste a grocery list).*'"
             )
             TelegramService.send_message(chat_id, welcome_msg)
 
@@ -278,7 +289,6 @@ async def telegram_webhook(request: Request):
         else:
             parsed = AIService.parse_transaction(text_stripped)
             
-            # Safe validation for both dict and list responses
             is_valid = False
             if isinstance(parsed, dict):
                 is_valid = parsed.get("is_transaction", True)
