@@ -51,10 +51,8 @@ class DBService:
     def parse_delete_query(cls, query_arg: str) -> tuple[str, str | None, str | None, str]:
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
-        today = now_ist.date()
         
         query_arg = query_arg.strip().lower()
-        
         months = {
             'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
             'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
@@ -127,23 +125,33 @@ class DBService:
         start_idx = page * page_size
         paginated_records = all_records[start_idx:start_idx + page_size]
         
-        # Get active selections quickly
         sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
         selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
         
         return title, paginated_records, total_records, total_pages, selected_ids
 
     @classmethod
-    def toggle_selection(cls, chat_id: int, tx_id: int) -> list:
+    def toggle_and_get_page(cls, chat_id: int, tx_id: int, query_arg: str = "", page: int = 0, page_size: int = 5) -> tuple[list, int, int, list]:
         supabase = cls.get_client()
-        existing = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).eq("transaction_id", tx_id).execute()
-        if existing.data:
-            supabase.table("user_selections").delete().eq("chat_id", chat_id).eq("transaction_id", tx_id).execute()
-        else:
-            supabase.table("user_selections").insert({"chat_id": chat_id, "transaction_id": tx_id}).execute()
-            
-        sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-        return [row["transaction_id"] for row in (sel_resp.data or [])]
+        mode, start_date, end_date, _ = cls.parse_delete_query(query_arg)
+        
+        # Single network roundtrip execution via PostgreSQL RPC
+        response = supabase.rpc("toggle_and_get_delete_view", {
+            "p_chat_id": chat_id,
+            "p_toggle_id": tx_id,
+            "p_page": page,
+            "p_page_size": page_size,
+            "p_start_date": start_date if mode == "range" else None,
+            "p_end_date": end_date if mode == "range" else None
+        }).execute()
+        
+        data = response.data or {}
+        return (
+            data.get("records", []) or [],
+            data.get("total_records", 0),
+            data.get("total_pages", 1),
+            data.get("selected_ids", []) or []
+        )
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
