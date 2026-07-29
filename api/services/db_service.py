@@ -139,6 +139,36 @@ class DBService:
         return processed_results
 
     @classmethod
+    def parse_date_range(cls, query_arg: str) -> tuple[str, str, str]:
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(IST)
+        query_arg = query_arg.strip().lower()
+        
+        months = {
+            'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11, 'dec': 12, 'december': 12
+        }
+
+        if not query_arg:
+            start = now_ist.replace(day=1).date().isoformat()
+            end = now_ist.date().isoformat()
+            return start, end, f"Monthly Report ({now_ist.strftime('%B %Y')})"
+
+        if re.match(r'^\d{4}$', query_arg):
+            year = int(query_arg)
+            return f"{year}-01-01", f"{year}-12-31", f"Annual Report ({year})"
+
+        if query_arg in months:
+            month_num = months[query_arg]
+            year = now_ist.year
+            last_day = calendar.monthrange(year, month_num)[1]
+            return f"{year}-{month_num:02d}-01", f"{year}-{month_num:02d}-{last_day:02d}", f"Report for {calendar.month_name[month_num]} {year}"
+
+        return now_ist.replace(day=1).date().isoformat(), now_ist.date().isoformat(), f"Monthly Report ({now_ist.strftime('%B %Y')})"
+
+    @classmethod
     def parse_delete_query(cls, query_arg: str) -> tuple[str, str | None, str | None, str]:
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
@@ -215,18 +245,6 @@ class DBService:
         del_resp = supabase.table("transactions").delete().in_("id", selected_ids).eq("chat_id", chat_id).execute()
         cls.clear_user_selections(chat_id)
         return len(del_resp.data or [])
-
-    @classmethod
-    def parse_date_range(cls, query_arg: str) -> tuple[str, str, str]:
-        IST = timezone(timedelta(hours=5, minutes=30))
-        now_ist = datetime.now(IST)
-        today = now_ist.date()
-        query_arg = query_arg.strip().lower()
-        if not query_arg:
-            start = now_ist.replace(day=1).date().isoformat()
-            end = today.isoformat()
-            return start, end, f"Monthly Summary ({now_ist.strftime('%B %Y')})"
-        return start, end, "Summary"
 
     @classmethod
     def get_summary(cls, chat_id: int, query_arg: str = "") -> dict:
@@ -329,9 +347,11 @@ class DBService:
         loan_id = created_loan["id"]
 
         installments = []
-        curr_date = s_date
+        curr_year = s_date.year
+        curr_month = s_date.month
+        
         for i in range(tenure_months):
-            month_str = curr_date.strftime("%Y-%m")
+            month_str = f"{curr_year}-{curr_month:02d}"
             installments.append({
                 "loan_id": loan_id,
                 "chat_id": chat_id,
@@ -339,10 +359,10 @@ class DBService:
                 "emi_amount": emi_amt,
                 "status": "pending"
             })
-            if curr_date.month == 12:
-                curr_date = curr_date.replace(year=curr_date.year + 1, month=1)
-            else:
-                curr_date = curr_date.replace(month=curr_date.month + 1)
+            curr_month += 1
+            if curr_month > 12:
+                curr_month = 1
+                curr_year += 1
 
         supabase.table("loan_installments").insert(installments).execute()
         return created_loan
@@ -358,7 +378,6 @@ class DBService:
         supabase = cls.get_client()
         base_salary = cls.get_user_salary(chat_id)
 
-        # Fetch incomes for this month, but exclude any records categorized as 'Salary' to prevent double counting
         incomes_res = supabase.table("incomes").select("amount, category, source_name").eq("chat_id", chat_id).gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
         
         extra_income = 0.0
