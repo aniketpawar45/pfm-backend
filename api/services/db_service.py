@@ -442,7 +442,7 @@ class DBService:
 
         percentage_used = (actual_house_spent / safe_house_budget * 100)
 
-warning_status = "safe"
+        warning_status = "safe"
         if percentage_used >= 100:
             warning_status = "breached"
         elif percentage_used >= 90:
