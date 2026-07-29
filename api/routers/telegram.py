@@ -22,15 +22,44 @@ async def telegram_webhook(request: Request):
     try:
         body = await request.json()
         
+        # 1. EXTRACT CHAT ID EARLY FOR AUTHENTICATION
+        chat_id = None
+        if "callback_query" in body:
+            chat_id = body["callback_query"]["message"]["chat"]["id"]
+        elif "message" in body:
+            chat_id = body["message"]["chat"]["id"]
+
+        if not chat_id:
+            return {"ok": True}
+
+        # 2. AUTHENTICATION GATEKEEPER
+        allowed_ids_env = os.getenv("ALLOWED_TELEGRAM_IDS", "")
+        if allowed_ids_env:
+            allowed_ids = []
+            for id_str in allowed_ids_env.split(","):
+                try:
+                    allowed_ids.append(int(id_str.strip()))
+                except ValueError:
+                    pass
+            
+            # If the list is configured but the user is not in it, block access.
+            if allowed_ids and chat_id not in allowed_ids:
+                TelegramService.send_message(
+                    chat_id, 
+                    f"⛔️ **Unauthorized Access**\n\nYour Telegram ID is `{chat_id}`.\n"
+                    "You do not have permission to interact with this Personal Finance Manager."
+                )
+                return {"ok": True}
+        
+        # --- PROCEED WITH NORMAL BOT LOGIC ---
+
         # Handle Callback Queries (Inline Keyboards for Delete / Pagination)
         if "callback_query" in body:
             callback = body["callback_query"]
-            chat_id = callback["message"]["chat"]["id"]
             message_id = callback["message"]["message_id"]
             data = callback.get("data", "")
             
             if data.startswith("del_page_"):
-                # Example data: del_page_None_1 -> parts = ['del', 'page', 'None', '1']
                 parts = data.split("_")
                 query_arg = parts[2] if len(parts) > 2 and parts[2] != "None" else ""
                 page = int(parts[-1])
@@ -40,7 +69,6 @@ async def telegram_webhook(request: Request):
                 TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
                 
             elif data.startswith("del_toggle_"):
-                # Example data: del_toggle_123_None_0 -> parts = ['del', 'toggle', '123', 'None', '0']
                 parts = data.split("_")
                 tx_id = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
@@ -67,7 +95,6 @@ async def telegram_webhook(request: Request):
             return {"ok": True}
 
         message = body["message"]
-        chat_id = message["chat"]["id"]
         text = message.get("text")
 
         if not text:
