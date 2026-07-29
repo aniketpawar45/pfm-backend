@@ -10,6 +10,13 @@ from api.services.ai_service import AIService
 
 router = APIRouter()
 
+@router.get("/setup-menu")
+async def setup_menu():
+    success = TelegramService.set_bot_commands()
+    if success:
+        return {"status": "success", "message": "Telegram command menu successfully registered!"}
+    raise HTTPException(status_code=500, detail="Failed to register bot commands. Check your TELEGRAM_BOT_TOKEN.")
+
 @router.post("/webhook")
 async def telegram_webhook(request: Request):
     try:
@@ -23,18 +30,22 @@ async def telegram_webhook(request: Request):
             data = callback.get("data", "")
             
             if data.startswith("del_page_"):
+                # Example data: del_page_None_1 -> parts = ['del', 'page', 'None', '1']
                 parts = data.split("_")
-                query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
+                query_arg = parts[2] if len(parts) > 2 and parts[2] != "None" else ""
                 page = int(parts[-1])
+                
                 title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg, page=page)
                 keyboard = TelegramService.build_delete_keyboard(records, total_pages, page, query_arg, selected_ids)
                 TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
                 
             elif data.startswith("del_toggle_"):
+                # Example data: del_toggle_123_None_0 -> parts = ['del', 'toggle', '123', 'None', '0']
                 parts = data.split("_")
                 tx_id = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
-                page = int(parts[4]) if len(parts) > 4 else 0
+                page = int(parts[-1])
+                
                 title, records, total_records, total_pages, selected_ids = DBService.get_cached_delete_view(chat_id, query_arg, page=page, toggle_tx_id=tx_id)
                 keyboard = TelegramService.build_delete_keyboard(records, total_pages, page, query_arg, selected_ids)
                 TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
@@ -66,7 +77,6 @@ async def telegram_webhook(request: Request):
 
         # Handle Commands
         if text_stripped.startswith("/start"):
-            # Automatically register commands with Telegram on every /start interaction
             TelegramService.set_bot_commands()
 
             welcome_msg = (
