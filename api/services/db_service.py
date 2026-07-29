@@ -27,20 +27,48 @@ class DBService:
         supabase = cls.get_client()
         items = parsed_data if isinstance(parsed_data, list) else [parsed_data]
         valid_records = []
+        income_records = []
+
         for item in items:
             if not item.get("is_transaction", True) or item.get("amount") is None:
                 continue
+            
+            tx_type = item.get("type", "expense")
+            desc = item.get("description") or "Miscellaneous"
+            amt = float(item.get("amount"))
+            cat = item.get("category") or "Miscellaneous"
+            t_date = item.get("date") or datetime.now().date().isoformat()
+
             valid_records.append({
                 "chat_id": chat_id,
-                "description": item.get("description") or "Miscellaneous",
-                "amount": float(item.get("amount")),
-                "type": item.get("type", "expense"),
-                "category": item.get("category") or "Miscellaneous",
-                "date": item.get("date") or datetime.now().date().isoformat()
+                "description": desc,
+                "amount": amt,
+                "type": tx_type,
+                "category": cat,
+                "date": t_date
             })
+
+            # Automatically sync income items into the incomes table for budget guardrails
+            if tx_type == "income":
+                income_records.append({
+                    "chat_id": chat_id,
+                    "source_name": desc,
+                    "amount": amt,
+                    "category": cat,
+                    "date": t_date
+                })
+
         if not valid_records:
             return []
+        
         response = supabase.table("transactions").insert(valid_records).execute()
+        
+        if income_records:
+            try:
+                supabase.table("incomes").insert(income_records).execute()
+            except Exception as e:
+                print(f"Failed to sync income record to incomes table: {str(e)}")
+
         return response.data or []
 
     @classmethod
@@ -171,18 +199,6 @@ class DBService:
         start_date, end_date, title = cls.parse_date_range(query_arg)
         response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_date).lte("date", end_date).order("date", desc=True).execute()
         return f"PFM_Export_{start_date}_to_{end_date}.csv", title, (response.data or [])
-
-    @classmethod
-    def get_category_drilldown_data(cls, chat_id: int, category_query: str) -> tuple[str, list]:
-        supabase = cls.get_client()
-        category_query = category_query.strip().lower()
-        IST = timezone(timedelta(hours=5, minutes=30))
-        now_ist = datetime.now(IST)
-        start_of_month = now_ist.replace(day=1).date().isoformat()
-        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_of_month).order("date", desc=True).execute()
-        records = response.data or []
-        filtered = [r for r in records if category_query in (r.get("category") or "").lower()]
-        return category_query.capitalize(), filtered
 
     @classmethod
     def set_user_salary(cls, chat_id: int, base_salary: float) -> dict:
