@@ -44,13 +44,13 @@ class AIService:
             f"3. Each transaction object must contain strictly these keys:\n"
             f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
             f"   - amount: float or null (numeric value only, exact price for that specific item, no currency symbols)\n"
-            f"   - type: string ('expense' or 'income') or null\n"
+            f"   - type: string ('expense', 'income', or 'transfer') or null\n"
+            f"   - category: string or null (e.g., 'Groceries', 'Food', 'Utilities', 'Transfer', 'Salary', 'Shopping', 'Entertainment', 'Miscellaneous')\n"
             f"   - description: string or null (clean description of the specific item, e.g., 'Coffee')\n"
             f"   - date: string or null (YYYY-MM-DD format, infer relative dates based on IST date)\n"
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
 
-        # Model configuration with model-specific safe token limits to respect TPM constraints
         models_config = [
             {"model": "llama-3.3-70b-versatile", "max_tokens": 8192},
             {"model": "llama-3.1-8b-instant", "max_tokens": 2048}
@@ -85,7 +85,6 @@ class AIService:
             except Exception as e:
                 last_exception = e
                 error_str = str(e).lower()
-                # If rate-limited (429) or payload too large (413), loop to the next fallback model
                 if any(code in error_str for code in ["429", "413", "rate limit", "tokens per day", "tokens per minute", "too large"]):
                     continue
                 else:
