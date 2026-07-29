@@ -112,10 +112,8 @@ class DBService:
         supabase = cls.get_client()
         
         if toggle_tx_id is not None:
-            sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
-            current_sels = [row["transaction_id"] for row in (sel_resp.data or [])]
-            
-            if toggle_tx_id in current_sels:
+            existing = supabase.table("user_selections").select("*").eq("chat_id", chat_id).eq("transaction_id", toggle_tx_id).execute()
+            if existing.data:
                 supabase.table("user_selections").delete().eq("chat_id", chat_id).eq("transaction_id", toggle_tx_id).execute()
             else:
                 supabase.table("user_selections").insert({"chat_id": chat_id, "transaction_id": toggle_tx_id}).execute()
@@ -139,10 +137,9 @@ class DBService:
         sel_resp = supabase.table("user_selections").select("transaction_id").eq("chat_id", chat_id).execute()
         selected_ids = [row["transaction_id"] for row in (sel_resp.data or [])]
         
-        total_amt = 0.0
-        if selected_ids:
-            amt_resp = supabase.table("transactions").select("amount").in_("id", selected_ids).eq("chat_id", chat_id).execute()
-            total_amt = sum(float(r["amount"]) for r in (amt_resp.data or []))
+        # In-memory amount calculation for lightning-fast UI response
+        id_to_amt = {r["id"]: float(r["amount"]) for r in all_records}
+        total_amt = sum(id_to_amt.get(sid, 0.0) for sid in selected_ids)
 
         return title, paginated_records, total_records, total_pages, selected_ids, len(selected_ids), total_amt
 
