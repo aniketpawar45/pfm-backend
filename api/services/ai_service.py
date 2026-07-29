@@ -39,7 +39,7 @@ class AIService:
             f"You are an AI financial assistant that parses natural language, itemized lists, or text into financial transactions in Indian Rupees (INR).\n"
             f"Today's date in IST is {current_date_ist}.\n"
             f"CRITICAL RULES:\n"
-            f"1. LISTS/BREAKDOWNS: If the user provides an itemized list or grocery list, **do not combine them into a single summary**. Instead, parse **every single line item** into its own distinct transaction object and return them together inside a JSON array (bulk operation).\n"
+            f"1. LISTS/BREAKDOWNS: If the user provides an itemized list or grocery list, parse every single line item into its own distinct transaction object and return them together inside a JSON array (bulk operation).\n"
             f"2. MULTI-ACTIONS/LISTS: Always return a JSON array of transaction objects if there are multiple items or distinct actions described. Return a single JSON object only for a single isolated transaction.\n"
             f"3. Each transaction object must contain strictly these keys:\n"
             f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
@@ -57,7 +57,8 @@ class AIService:
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": text_input or ""}
                 ],
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=8192  # Increased token limit to prevent truncation on massive lists
             )
         except Exception as e:
             raise ValueError(f"Groq API call failed: {str(e)}")
