@@ -44,7 +44,6 @@ class DBService:
             amt = float(item.get("amount"))
             cat = item.get("category") or "Miscellaneous"
             
-            # Sanitize Date from AI (handle "unknown", "today", invalid strings, etc.)
             raw_date = item.get("date")
             t_date = current_date_str
             if raw_date and isinstance(raw_date, str):
@@ -277,6 +276,38 @@ class DBService:
         }
 
     @classmethod
+    def get_statistics(cls, chat_id: int, query_arg: str = "") -> dict:
+        supabase = cls.get_client()
+        start_date, end_date, title = cls.parse_date_range(query_arg)
+        response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_date).lte("date", end_date).execute()
+        records = response.data or []
+        
+        total_expense = sum(float(r["amount"]) for r in records if r["type"] == "expense")
+        total_income = sum(float(r["amount"]) for r in records if r["type"] == "income")
+        net_balance = total_income - total_expense
+        
+        expenses = [float(r["amount"]) for r in records if r["type"] == "expense"]
+        max_expense = max(expenses) if expenses else 0.0
+        
+        d_start = datetime.fromisoformat(start_date)
+        d_end = datetime.fromisoformat(end_date)
+        days_count = max(1, (d_end - d_start).days + 1)
+        avg_daily_spend = total_expense / days_count
+        
+        savings_rate = (net_balance / total_income * 100) if total_income > 0 else 0.0
+
+        return {
+            "title": title,
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "net_balance": net_balance,
+            "max_expense": max_expense,
+            "avg_daily_spend": avg_daily_spend,
+            "savings_rate": savings_rate,
+            "transaction_count": len(records)
+        }
+
+    @classmethod
     def get_category_data_for_chart(cls, chat_id: int, query_arg: str = "") -> tuple[str, dict]:
         supabase = cls.get_client()
         start_date, end_date, title = cls.parse_date_range(query_arg)
@@ -409,25 +440,4 @@ class DBService:
         tx_res = supabase.table("transactions").select("amount, category").eq("chat_id", chat_id).eq("type", "expense").neq("category", "Loans & EMIs").gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
         actual_house_spent = sum(float(tx["amount"]) for tx in (tx_res.data or []))
 
-        percentage_used = (actual_house_spent / safe_house_budget * 100) if safe_house_budget > 0 else 100.0
-
-        warning_status = "safe"
-        if percentage_used >= 100:
-            warning_status = "breached"
-        elif percentage_used >= 90:
-            warning_status = "critical"
-        elif percentage_used >= 75:
-            warning_status = "warning"
-
-        return {
-            "year_month": year_month,
-            "base_salary": base_salary,
-            "extra_income": extra_income,
-            "total_inflow": total_inflow,
-            "total_emis": total_emis,
-            "paid_emis": paid_emis,
-            "safe_house_budget": safe_house_budget,
-            "actual_house_spent": actual_house_spent,
-            "percentage_used": round(percentage_used, 1),
-            "warning_status": warning_status
-        }
+        percentage_used = (actual_house_spent / safe_house_budget * 100)
