@@ -74,7 +74,6 @@ class TelegramService:
             amt = float(r.get("amount", 0))
             date = r.get("date")
             
-            # Clean, clutter-free button layout
             btn_text = f"{icon} {date} | {desc} — ₹{amt:,.2f}"
             keyboard.append([{"text": btn_text, "callback_data": f"del_t:{tx_id}:{page}:{query_arg}"}])
             
@@ -103,7 +102,7 @@ class TelegramService:
             if page == 0:
                 DBService.clear_user_selections(chat_id)
                 
-            title, records, total_records, total_pages, selected_ids, count, total_amt = DBService.get_delete_view_data(chat_id, query_arg=query_arg, page=page, page_size=5)
+            title, records, total_records, total_pages, selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
             
             if total_records == 0:
                 await cls.send_message(chat_id, f"🗑️ <b>Delete Manager — {title}</b>\n\nNo transactions found matching your query.")
@@ -112,7 +111,7 @@ class TelegramService:
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
+                f"🟢 <b>Selected Items:</b> {len(selected_ids)}\n"
                 f"⚪ <b>Total Records:</b> {total_records}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>Page {page + 1} of {total_pages} (5 items/page)</i>"
@@ -125,12 +124,17 @@ class TelegramService:
     @classmethod
     async def update_delete_menu(cls, chat_id: int, message_id: int, query_arg: str = "", page: int = 0, toggle_tx_id: int | None = None):
         try:
-            title, records, total_records, total_pages, selected_ids, count, total_amt = DBService.get_delete_view_data(chat_id, query_arg=query_arg, page=page, page_size=5, toggle_tx_id=toggle_tx_id)
+            if toggle_tx_id is not None:
+                selected_ids = DBService.toggle_selection(chat_id, toggle_tx_id)
+            else:
+                selected_ids = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)[4]
+                
+            title, records, total_records, total_pages, _ = DBService.get_delete_page_data(chat_id, query_arg=query_arg, page=page, page_size=5)
             
             text = (
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
+                f"🟢 <b>Selected Items:</b> {len(selected_ids)}\n"
                 f"⚪ <b>Total Records:</b> {total_records}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>Page {page + 1} of {total_pages} (5 items/page)</i>"
