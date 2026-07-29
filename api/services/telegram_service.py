@@ -69,13 +69,13 @@ class TelegramService:
             tx_id = r["id"]
             is_selected = tx_id in selected_ids
             
-            icon = "🟢 [SELECTED]" if is_selected else "⚪ [Tap]"
+            icon = "🟢" if is_selected else "⚪"
             desc = r.get("description") or "Misc"
             amt = float(r.get("amount", 0))
             date = r.get("date")
-            t_type = r.get("type", "expense").capitalize()
             
-            btn_text = f"{icon} {date} | {desc} (₹{amt:,.2f}) [{t_type}]"
+            # Clean, clutter-free button layout
+            btn_text = f"{icon} {date} | {desc} — ₹{amt:,.2f}"
             keyboard.append([{"text": btn_text, "callback_data": f"del_t:{tx_id}:{page}:{query_arg}"}])
             
         nav_row = []
@@ -91,7 +91,7 @@ class TelegramService:
         
         count = len(selected_ids)
         action_row = [
-            {"text": f"🗑️ Confirm ({count})", "callback_data": "del_confirm"},
+            {"text": f"🗑️ Confirm Delete ({count})", "callback_data": "del_confirm"},
             {"text": "❌ Cancel", "callback_data": "del_cancel"}
         ]
         keyboard.append(action_row)
@@ -113,9 +113,9 @@ class TelegramService:
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
-                f"⚪ <b>Unselected</b> | Total Records: {total_records}\n"
+                f"⚪ <b>Total Records:</b> {total_records}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
+                f"<i>Page {page + 1} of {total_pages} (5 items/page)</i>"
             )
             markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
             await cls.send_message(chat_id, text, reply_markup=markup)
@@ -131,9 +131,9 @@ class TelegramService:
                 f"🗑️ <b>Delete Manager — {title}</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"🟢 <b>Selected:</b> {count} items (₹{total_amt:,.2f})\n"
-                f"⚪ <b>Unselected</b> | Total Records: {total_records}\n"
+                f"⚪ <b>Total Records:</b> {total_records}\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"<i>Showing page {page + 1} of {total_pages} (5 items/page)</i>"
+                f"<i>Page {page + 1} of {total_pages} (5 items/page)</i>"
             )
             markup = cls.build_delete_keyboard(records, selected_ids, page, total_pages, query_arg)
             await cls.edit_message(chat_id, message_id, text, reply_markup=markup)
