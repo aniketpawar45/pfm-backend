@@ -7,7 +7,6 @@ from api.services.db_service import DBService
 class TelegramService:
     @classmethod
     def get_api_url(cls) -> str:
-        # Check settings first, with direct os.environ fallback to prevent any config mapping gaps
         token = getattr(settings, "TELEGRAM_BOT_TOKEN", None)
         if not token:
             token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -33,8 +32,6 @@ class TelegramService:
                 data = response.json()
                 if data.get("ok"):
                     return data["result"]["message_id"]
-                else:
-                    print(f"Telegram API Error: {data}")
             except Exception as e:
                 print(f"Failed to send Telegram message: {str(e)}")
         return None
@@ -54,6 +51,35 @@ class TelegramService:
                 })
             except Exception as e:
                 print(f"Failed to edit Telegram message: {str(e)}")
+
+    @classmethod
+    async def send_summary_report(cls, chat_id: int, query_arg: str = ""):
+        try:
+            summary = DBService.get_summary(chat_id, query_arg=query_arg)
+            
+            if summary["count"] == 0:
+                await cls.send_message(
+                    chat_id, 
+                    f"📊 <b>{summary['title']}</b>\n\nNo transactions logged for this period!"
+                )
+                return
+
+            cat_breakdown = "\n".join([
+                f"  • {cat}: ₹{amt:,.2f}" for cat, amt in summary["categories"].items()
+            ]) or "  • None"
+
+            report = (
+                f"📊 <b>{summary['title']}</b>\n\n"
+                f"📥 <b>Total Income:</b> ₹{summary['total_income']:,.2f}\n"
+                f"📤 <b>Total Expenses:</b> ₹{summary['total_expense']:,.2f}\n"
+                f"🔄 <b>Total Transfers:</b> ₹{summary['total_transfer']:,.2f}\n"
+                f"💰 <b>Net Balance:</b> ₹{summary['net_balance']:,.2f}\n\n"
+                f"🏷️ <b>Expense Categories:</b>\n{cat_breakdown}\n\n"
+                f"<i>Total records analyzed: {summary['count']}</i>"
+            )
+            await cls.send_message(chat_id, report)
+        except Exception as e:
+            await cls.send_message(chat_id, f"❌ <b>Error generating summary</b>\n<code>{str(e)}</code>")
 
     @classmethod
     async def process_natural_language(cls, chat_id: int, text_input: str = None, audio_bytes: bytes = None):
@@ -79,10 +105,8 @@ class TelegramService:
                     "🔄 <b>[90%]</b> Validating amounts & saving to Supabase ledger..."
                 )
 
-            # Save to Supabase Database
             DBService.save_transactions(chat_id, parsed_data)
 
-            # Handle bulk list items or single items returned as lists
             if isinstance(parsed_data, list):
                 if not parsed_data:
                     await cls.edit_message(chat_id, msg_id, "🤖 <b>No transactions found</b> in your message.")
@@ -107,7 +131,6 @@ class TelegramService:
                     )
                     return
 
-                # If list contains exactly 1 item, treat it as a single transaction view for cleaner UI
                 if len(valid_items) == 1:
                     item = valid_items[0]
                     desc = item.get("description") or "Miscellaneous"
@@ -127,7 +150,6 @@ class TelegramService:
                     await cls.edit_message(chat_id, msg_id, final_text)
                     return
 
-                # Multiple items -> Bulk formatting
                 formatted_list = "\n".join([
                     f"• <b>{item.get('description') or 'Miscellaneous'}</b>: ₹{item.get('amount'):,.2f} <i>({item.get('type', 'expense')})</i>" 
                     for item in valid_items
@@ -141,7 +163,6 @@ class TelegramService:
                 await cls.edit_message(chat_id, msg_id, final_text)
                 return
 
-            # Handle single transaction (JSON Object)
             if isinstance(parsed_data, dict):
                 if not parsed_data.get("is_transaction", True):
                     await cls.edit_message(
@@ -152,11 +173,7 @@ class TelegramService:
                     return
 
                 if parsed_data.get("amount") is None:
-                    await cls.edit_message(
-                        chat_id, 
-                        msg_id, 
-                        "⚠️ <b>Amount Missing</b>\nI noticed a transaction, but the amount is missing. Please specify how much (e.g., <i>'Paid 500 for lunch'</i>)."
-                    )
+                    await cls.edit_message(chat_id, msg_id, "⚠️ <b>Amount Missing</b>")
                     return
 
                 desc = parsed_data.get("description") or "Miscellaneous"
@@ -190,8 +207,16 @@ class TelegramService:
             return
 
         chat_id = message["chat"]["id"]
-        text = message.get("text")
+        text = message.get("text", "").strip()
         voice = message.get("voice")
+
+        text_lower = text.lower()
+        if text_lower.startswith("/summary") or text_lower.startswith("/report") or text_lower.startswith("/month"):
+            # Extract everything after the command (e.g. "/summary july" -> "july")
+            parts = text.split(maxsplit=1)
+            query_arg = parts[1] if len(parts) > 1 else ""
+            await cls.send_summary_report(chat_id, query_arg=query_arg)
+            return
 
         audio_bytes = None
         if voice:
