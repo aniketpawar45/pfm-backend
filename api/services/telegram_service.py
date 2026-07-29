@@ -58,7 +58,7 @@ class TelegramService:
         url = f"{cls.get_api_url()}/answerCallbackQuery"
         async with httpx.AsyncClient() as client:
             try:
-                await client.post(url, json={"callback_query_id": callback_query_id, "text": text})
+                await client.post(url, json={"callback_query_id": callback_query_id, "text": text, "cache_time": 0})
             except Exception as e:
                 print(f"Failed to answer callback query: {str(e)}")
 
@@ -296,7 +296,8 @@ class TelegramService:
                 page = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 else ""
                 
-                await cls.answer_callback_query(query_id, "Selection updated")
+                # Instant acknowledgment toast for zero perceived delay
+                await cls.answer_callback_query(query_id, "Toggled")
                 if message_id:
                     await cls.update_delete_menu(chat_id, message_id, query_arg=query_arg, page=page, toggle_tx_id=tx_id)
                 return
