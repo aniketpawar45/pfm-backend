@@ -45,34 +45,46 @@ class AIService:
             f"   - is_transaction: boolean (true if financial, false if general chat/non-financial)\n"
             f"   - amount: float or null (numeric value only, exact price for that specific item, no currency symbols)\n"
             f"   - type: string ('expense' or 'income') or null\n"
-            f"   - description: string or null (clean description of the specific item, e.g., 'Rice - 10 kg')\n"
+            f"   - description: string or null (clean description of the specific item, e.g., 'Coffee')\n"
             f"   - date: string or null (YYYY-MM-DD format, infer relative dates based on IST date)\n"
             f"Return ONLY valid JSON with no markdown wrapping if possible."
         )
 
-        try:
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": text_input or ""}
-                ],
-                temperature=0.0,
-                max_tokens=8192  # Increased token limit to prevent truncation on massive lists
-            )
-        except Exception as e:
-            raise ValueError(f"Groq API call failed: {str(e)}")
-        
-        try:
-            result_text = response.choices[0].message.content.strip()
-            if result_text.startswith("```json"):
-                result_text = result_text[7:]
-            if result_text.startswith("```"):
-                result_text = result_text[3:]
-            if result_text.endswith("```"):
-                result_text = result_text[:-3]
+        # Automatic model fallback pipeline (Primary -> Fallback)
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        last_exception = None
+
+        for model_name in models_to_try:
+            try:
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": text_input or ""}
+                    ],
+                    temperature=0.0,
+                    max_tokens=8192
+                )
                 
-            data = json.loads(result_text.strip())
-            return data
-        except Exception as e:
-            raise ValueError(f"Failed to parse AI response as JSON: {str(e)}")
+                result_text = response.choices[0].message.content.strip()
+                if result_text.startswith("```json"):
+                    result_text = result_text[7:]
+                if result_text.startswith("```"):
+                    result_text = result_text[3:]
+                if result_text.endswith("```"):
+                    result_text = result_text[:-3]
+                    
+                data = json.loads(result_text.strip())
+                return data
+            except Exception as e:
+                last_exception = e
+                error_str = str(e).lower()
+                # If rate-limited or quota exceeded, seamlessly loop to the next fallback model
+                if "429" in error_str or "rate limit" in error_str or "tokens per day" in error_str:
+                    continue
+                else:
+                    if model_name == models_to_try[-1]:
+                        raise ValueError(f"AI processing failed across all models: {str(e)}")
+                    continue
+        
+        raise ValueError(f"Groq API rate limit reached across all available models. Details: {str(last_exception)}")
