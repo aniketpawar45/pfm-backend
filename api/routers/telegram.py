@@ -32,32 +32,22 @@ async def telegram_webhook(request: Request):
         if not chat_id:
             return {"ok": True}
 
-        # 2. STRICT AUTHENTICATION GATEKEEPER
+        # 2. OPAQUE AUTHENTICATION GATEKEEPER
         allowed_ids_env = os.getenv("ALLOWED_TELEGRAM_IDS", "")
         
-        # If the env var is missing entirely, lock everyone out for safety
-        if not allowed_ids_env:
-            TelegramService.send_message(
-                chat_id, 
-                f"⚠️ **System Locked**\n\nAuthentication is not configured in Vercel. \n"
-                f"Please add your Telegram ID (`{chat_id}`) to the ALLOWED_TELEGRAM_IDS environment variable and redeploy."
-            )
-            return {"ok": True}
-
-        # Parse the allowed IDs
         allowed_ids = []
-        for id_str in allowed_ids_env.split(","):
-            try:
-                allowed_ids.append(int(id_str.strip()))
-            except ValueError:
-                pass
+        if allowed_ids_env:
+            for id_str in allowed_ids_env.split(","):
+                try:
+                    allowed_ids.append(int(id_str.strip()))
+                except ValueError:
+                    pass
         
-        # If the user's ID is not in the list, block them immediately
-        if chat_id not in allowed_ids:
+        # Block instantly without leaking the chat ID, Vercel info, or system instructions
+        if not allowed_ids or chat_id not in allowed_ids:
             TelegramService.send_message(
                 chat_id, 
-                f"⛔️ **Unauthorized Access**\n\nYour Telegram ID is `{chat_id}`.\n"
-                "You do not have permission to interact with this Personal Finance Manager."
+                "⛔️ **Access Restricted**\n\nThis is a private Personal Finance Manager. You do not have authorization to use this service."
             )
             return {"ok": True}
         
@@ -70,7 +60,6 @@ async def telegram_webhook(request: Request):
             data = callback.get("data", "")
             
             if data.startswith("del_page_"):
-                # Example data: del_page_None_1 -> parts = ['del', 'page', 'None', '1']
                 parts = data.split("_")
                 query_arg = parts[2] if len(parts) > 2 and parts[2] != "None" else ""
                 page = int(parts[-1])
@@ -80,7 +69,6 @@ async def telegram_webhook(request: Request):
                 TelegramService.edit_message(chat_id, message_id, f"🗑️ **{title}**\nSelect transactions to delete:", keyboard)
                 
             elif data.startswith("del_toggle_"):
-                # Example data: del_toggle_123_None_0 -> parts = ['del', 'toggle', '123', 'None', '0']
                 parts = data.split("_")
                 tx_id = int(parts[2])
                 query_arg = parts[3] if len(parts) > 3 and parts[3] != "None" else ""
