@@ -22,6 +22,107 @@ class DBService:
             raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing from environment variables.")
         return create_client(url, key)
 
+    # -------------------------------------------------------------
+    # NEW: SUBSCRIPTIONS & CRON LOGIC
+    # -------------------------------------------------------------
+    @classmethod
+    def add_subscription(cls, chat_id: int, name: str, amount: float, cycle: str, next_billing_date: str) -> dict:
+        supabase = cls.get_client()
+        sub_record = {
+            "chat_id": chat_id,
+            "name": name,
+            "amount": amount,
+            "cycle": cycle.lower(),
+            "next_billing_date": next_billing_date,
+            "status": "active"
+        }
+        res = supabase.table("subscriptions").insert(sub_record).execute()
+        return res.data[0] if res.data else {}
+
+    @classmethod
+    def get_subscriptions(cls, chat_id: int) -> list:
+        supabase = cls.get_client()
+        res = supabase.table("subscriptions").select("*").eq("chat_id", chat_id).eq("status", "active").execute()
+        return res.data or []
+
+    @classmethod
+    def delete_subscription(cls, chat_id: int, sub_name: str) -> str:
+        supabase = cls.get_client()
+        res = supabase.table("subscriptions").select("id, name").eq("chat_id", chat_id).ilike("name", f"%{sub_name.strip()}%").execute()
+        if not res.data:
+            return None
+        sub_id = res.data[0]["id"]
+        actual_name = res.data[0]["name"]
+        supabase.table("subscriptions").delete().eq("id", sub_id).execute()
+        return actual_name
+
+    @classmethod
+    def process_daily_cron(cls) -> list:
+        supabase = cls.get_client()
+        messages = []
+        IST = timezone(timedelta(hours=5, minutes=30))
+        today_date = datetime.now(IST).date()
+        today_str = today_date.isoformat()
+        
+        # 1. Process Due Subscriptions
+        subs_res = supabase.table("subscriptions").select("*").eq("status", "active").lte("next_billing_date", today_str).execute()
+        for sub in (subs_res.data or []):
+            chat_id = sub["chat_id"]
+            amt = float(sub["amount"])
+            
+            # Log as Expense
+            tx = {
+                "chat_id": chat_id, 
+                "description": f"Auto-Billed: {sub['name']}", 
+                "amount": amt, 
+                "type": "expense", 
+                "category": "Subscriptions", 
+                "date": today_str
+            }
+            supabase.table("transactions").insert(tx).execute()
+            
+            # Calculate Next Billing Date Safely using calendar
+            if sub["cycle"] == "monthly":
+                month = today_date.month % 12 + 1
+                year = today_date.year + (today_date.month // 12)
+                day = min(today_date.day, calendar.monthrange(year, month)[1])
+            else: # yearly
+                year = today_date.year + 1
+                month = today_date.month
+                day = min(today_date.day, calendar.monthrange(year, month)[1])
+                
+            next_date = f"{year}-{month:02d}-{day:02d}"
+            supabase.table("subscriptions").update({"next_billing_date": next_date}).eq("id", sub["id"]).execute()
+            
+            messages.append((chat_id, f"🔄 **Auto-Billed Subscription:**\nSuccessfully paid **{amt:,.2f}** for **{sub['name']}**.\n\n📅 Next billing: {next_date}"))
+
+        # 2. Check Budget Alerts for All Users
+        users_res = supabase.table("user_profiles").select("chat_id").execute()
+        month_str = today_date.strftime("%Y-%m")
+        for u in (users_res.data or []):
+            chat_id = u["chat_id"]
+            budget = cls.get_monthly_budget_guardrail(chat_id, month_str)
+            # Only alert if critical or breached
+            if budget["warning_status"] in ["critical", "breached"]:
+                emoji = "🟠" if budget["warning_status"] == "critical" else "🔴"
+                messages.append((chat_id, f"{emoji} **Proactive Budget Alert!**\nYou have utilized **{budget['percentage_used']}%** of your Safe House Budget for this month.\n\nLimit: {budget['safe_house_budget']:,.2f}\nSpent: {budget['actual_house_spent']:,.2f}"))
+
+        return messages
+
+    @classmethod
+    def get_financial_context(cls, chat_id: int) -> dict:
+        """Aggregates all financial data for AI reasoning."""
+        IST = timezone(timedelta(hours=5, minutes=30))
+        current_month = datetime.now(IST).strftime("%Y-%m")
+        budget = cls.get_monthly_budget_guardrail(chat_id, current_month)
+        stats = cls.get_statistics(chat_id, current_month) # Pass month to get current stats
+        loans = cls.get_user_loans(chat_id)
+        subs = cls.get_subscriptions(chat_id)
+        return {"budget": budget, "stats": stats, "loans": loans, "subs": subs}
+
+    # -------------------------------------------------------------
+    # EXISTING CODE
+    # -------------------------------------------------------------
     @classmethod
     def save_transactions(cls, chat_id: int, parsed_data: dict | list) -> list:
         supabase = cls.get_client()
@@ -140,10 +241,8 @@ class DBService:
                 processed_results.append({**r, "is_auto_emi": False})
 
         if income_records:
-            try:
-                supabase.table("incomes").insert(income_records).execute()
-            except Exception as e:
-                print(f"Failed to sync income record to incomes table: {str(e)}")
+            try: supabase.table("incomes").insert(income_records).execute()
+            except Exception as e: print(f"Failed to sync income record: {str(e)}")
 
         return processed_results
 
@@ -188,8 +287,7 @@ class DBService:
             'aug': 8, 'august': 8, 'sep': 9, 'september': 9, 'oct': 10, 'october': 10,
             'nov': 11, 'november': 11, 'dec': 12, 'december': 12
         }
-        if not query_arg:
-            return "all", None, None, "Recent Transactions"
+        if not query_arg: return "all", None, None, "Recent Transactions"
         parts = query_arg.split()
         if re.match(r'^\d{4}$', query_arg):
             year = int(query_arg)
@@ -223,16 +321,12 @@ class DBService:
             records = session["records"]
             title = session["title"]
         if toggle_tx_id is not None:
-            if chat_id not in cls._selections_cache:
-                cls._selections_cache[chat_id] = set()
-            if toggle_tx_id in cls._selections_cache[chat_id]:
-                cls._selections_cache[chat_id].remove(toggle_tx_id)
-            else:
-                cls._selections_cache[chat_id].add(toggle_tx_id)
+            if chat_id not in cls._selections_cache: cls._selections_cache[chat_id] = set()
+            if toggle_tx_id in cls._selections_cache[chat_id]: cls._selections_cache[chat_id].remove(toggle_tx_id)
+            else: cls._selections_cache[chat_id].add(toggle_tx_id)
         total_records = len(records)
         total_pages = math.ceil(total_records / page_size) if total_records > 0 else 1
-        if page >= total_pages and total_pages > 0:
-            page = max(0, total_pages - 1)
+        if page >= total_pages and total_pages > 0: page = max(0, total_pages - 1)
         start_idx = page * page_size
         paginated_records = records[start_idx:start_idx + page_size]
         selected_ids = cls._selections_cache.get(chat_id, set())
@@ -240,16 +334,13 @@ class DBService:
 
     @classmethod
     def clear_user_selections(cls, chat_id: int):
-        if chat_id in cls._selections_cache:
-            cls._selections_cache[chat_id].clear()
-        if chat_id in cls._delete_sessions:
-            cls._delete_sessions.pop(chat_id, None)
+        if chat_id in cls._selections_cache: cls._selections_cache[chat_id].clear()
+        if chat_id in cls._delete_sessions: cls._delete_sessions.pop(chat_id, None)
 
     @classmethod
     def confirm_and_delete(cls, chat_id: int) -> int:
         selected_ids = list(cls._selections_cache.get(chat_id, set()))
-        if not selected_ids:
-            return 0
+        if not selected_ids: return 0
         supabase = cls.get_client()
         del_resp = supabase.table("transactions").delete().in_("id", selected_ids).eq("chat_id", chat_id).execute()
         cls.clear_user_selections(chat_id)
@@ -285,7 +376,6 @@ class DBService:
         total_expense = sum(float(r["amount"]) for r in records if r["type"] == "expense")
         total_income = sum(float(r["amount"]) for r in records if r["type"] == "income")
         net_balance = total_income - total_expense
-
         expenses = [float(r["amount"]) for r in records if r["type"] == "expense"]
         max_expense = max(expenses) if expenses else 0.0
 
@@ -293,18 +383,12 @@ class DBService:
         d_end = datetime.fromisoformat(end_date)
         days_count = max(1, (d_end - d_start).days + 1)
         avg_daily_spend = total_expense / days_count
-
         savings_rate = (net_balance / total_income * 100) if total_income > 0 else 0.0
 
         return {
-            "title": title,
-            "total_income": total_income,
-            "total_expense": total_expense,
-            "net_balance": net_balance,
-            "max_expense": max_expense,
-            "avg_daily_spend": avg_daily_spend,
-            "savings_rate": savings_rate,
-            "transaction_count": len(records)
+            "title": title, "total_income": total_income, "total_expense": total_expense,
+            "net_balance": net_balance, "max_expense": max_expense, "avg_daily_spend": avg_daily_spend,
+            "savings_rate": savings_rate, "transaction_count": len(records)
         }
 
     @classmethod
@@ -329,11 +413,7 @@ class DBService:
     @classmethod
     def set_user_salary(cls, chat_id: int, base_salary: float) -> dict:
         supabase = cls.get_client()
-        data = {
-            "chat_id": chat_id,
-            "base_salary": base_salary,
-            "updated_at": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat()
-        }
+        data = {"chat_id": chat_id, "base_salary": base_salary, "updated_at": datetime.now(timezone(timedelta(hours=5, minutes=30))).isoformat()}
         res = supabase.table("user_profiles").upsert(data, on_conflict="chat_id").execute()
         return res.data[0] if res.data else {}
 
@@ -341,33 +421,20 @@ class DBService:
     def get_user_salary(cls, chat_id: int) -> float:
         supabase = cls.get_client()
         res = supabase.table("user_profiles").select("base_salary").eq("chat_id", chat_id).execute()
-        if res.data:
-            return float(res.data[0].get("base_salary", 0.0))
+        if res.data: return float(res.data[0].get("base_salary", 0.0))
         return 0.0
 
     @classmethod
-    def add_loan_with_schedule(
-        cls, 
-        chat_id: int, 
-        name: str, 
-        lender_type: str, 
-        priority: str, 
-        principal: float, 
-        interest_rate: float, 
-        tenure_months: int, 
-        first_emi_date: str = None
-    ) -> dict:
+    def add_loan_with_schedule(cls, chat_id: int, name: str, lender_type: str, priority: str, principal: float, interest_rate: float, tenure_months: int, first_emi_date: str = None) -> dict:
         supabase = cls.get_client()
         s_date = datetime.strptime(first_emi_date, "%Y-%m-%d").date() if first_emi_date else datetime.now().date()
 
-        if interest_rate == 0:
-            emi_amt = principal / tenure_months
+        if interest_rate == 0: emi_amt = principal / tenure_months
         else:
             monthly_rate = (interest_rate / 100.0) / 12.0
             emi_amt = principal * monthly_rate * ((1 + monthly_rate) ** tenure_months) / (((1 + monthly_rate) ** tenure_months) - 1)
         emi_amt = round(emi_amt, 2)
 
-        # Determine how many EMIs have already passed compared to the current month
         curr_year = s_date.year
         curr_month = s_date.month
         
@@ -379,138 +446,78 @@ class DBService:
 
         for i in range(tenure_months):
             month_str = f"{curr_year}-{curr_month:02d}"
-            
-            # If the scheduled month is strictly in the past, mark it as already paid
             if month_str < current_month_str:
                 status = "paid"
                 passed_emis_count += 1
-            else:
-                status = "pending"
+            else: status = "pending"
                 
-            installments.append({
-                "chat_id": chat_id,
-                "installment_month": month_str,
-                "emi_amount": emi_amt,
-                "status": status
-            })
+            installments.append({"chat_id": chat_id, "installment_month": month_str, "emi_amount": emi_amt, "status": status})
             
             curr_month += 1
-            if curr_month > 12:
-                curr_month = 1
-                curr_year += 1
+            if curr_month > 12: curr_month = 1; curr_year += 1
 
-        # Re-calculate the actual remaining principal after deducting past EMIs
-        if interest_rate == 0:
-            remaining_amount = principal - (passed_emis_count * emi_amt)
+        if interest_rate == 0: remaining_amount = principal - (passed_emis_count * emi_amt)
         else:
             monthly_rate = (interest_rate / 100.0) / 12.0
-            # Amortization formula to find remaining balance after X payments
             remaining_amount = principal * (((1 + monthly_rate)**tenure_months) - ((1 + monthly_rate)**passed_emis_count)) / (((1 + monthly_rate)**tenure_months) - 1)
             
         remaining_amount = max(0.0, round(remaining_amount, 2))
         loan_status = "closed" if remaining_amount == 0 else "active"
 
         loan_record = {
-            "chat_id": chat_id,
-            "name": name,
-            "lender_type": lender_type,
-            "priority": priority,
-            "principal": principal,
-            "interest_rate": interest_rate,
-            "tenure_months": tenure_months,
-            "emi_amount": emi_amt,
-            "remaining_amount": remaining_amount,
-            "start_date": s_date.isoformat(),
-            "status": loan_status
+            "chat_id": chat_id, "name": name, "lender_type": lender_type, "priority": priority, "principal": principal,
+            "interest_rate": interest_rate, "tenure_months": tenure_months, "emi_amount": emi_amt, 
+            "remaining_amount": remaining_amount, "start_date": s_date.isoformat(), "status": loan_status
         }
         
         loan_res = supabase.table("loans").insert(loan_record).execute()
-        if not loan_res.data:
-            raise ValueError("Failed to create loan record.")
-
         created_loan = loan_res.data[0]
         loan_id = created_loan["id"]
-
-        for inst in installments:
-            inst["loan_id"] = loan_id
-
+        for inst in installments: inst["loan_id"] = loan_id
         supabase.table("loan_installments").insert(installments).execute()
         
-        # Attach these virtual fields just so the Telegram bot can show the user what happened
         created_loan["pending_emis"] = tenure_months - passed_emis_count
         created_loan["passed_emis"] = passed_emis_count
-        
         return created_loan
 
     @classmethod
     def get_user_loans(cls, chat_id: int) -> list:
-        """Fetches active loans and dynamically counts the number of pending EMIs for each."""
         supabase = cls.get_client()
         res = supabase.table("loans").select("*").eq("chat_id", chat_id).eq("status", "active").execute()
         loans = res.data or []
-        
         if loans:
-            # Query all pending installments for this user at once
             inst_res = supabase.table("loan_installments").select("loan_id").eq("chat_id", chat_id).eq("status", "pending").execute()
             pending_installments = inst_res.data or []
-            
-            # Count them up by loan_id
             pending_counts = {}
             for inst in pending_installments:
                 lid = inst["loan_id"]
                 pending_counts[lid] = pending_counts.get(lid, 0) + 1
-                
-            # Attach the count back to the loan objects so the frontend can display it
             for l in loans:
                 l["pending_emis"] = pending_counts.get(l["id"], 0)
-                
         return loans
 
     @classmethod
     def delete_loan(cls, chat_id: int, loan_name: str):
-        """Safely deletes a loan and its associated payment schedule to prevent DB crashes."""
-        try:
-            supabase = cls.get_client()
-            
-            res = supabase.table("loans").select("id, name").eq("chat_id", chat_id).ilike("name", f"%{loan_name.strip()}%").execute()
-            if not res.data:
-                return None
-            
-            loan_id = res.data[0]["id"]
-            actual_name = res.data[0]["name"]
-            
-            # Delete associated loan installments first
-            supabase.table("loan_installments").delete().eq("loan_id", loan_id).execute()
-            
-            # Delete the loan itself
-            supabase.table("loans").delete().eq("id", loan_id).execute()
-            
-            return actual_name
-        except Exception as e:
-            print(f"Error deleting loan: {e}")
-            raise e
+        supabase = cls.get_client()
+        res = supabase.table("loans").select("id, name").eq("chat_id", chat_id).ilike("name", f"%{loan_name.strip()}%").execute()
+        if not res.data: return None
+        loan_id, actual_name = res.data[0]["id"], res.data[0]["name"]
+        supabase.table("loan_installments").delete().eq("loan_id", loan_id).execute()
+        supabase.table("loans").delete().eq("id", loan_id).execute()
+        return actual_name
 
     @classmethod
     def get_monthly_budget_guardrail(cls, chat_id: int, year_month: str) -> dict:
         supabase = cls.get_client()
         base_salary = cls.get_user_salary(chat_id)
-
         incomes_res = supabase.table("incomes").select("amount, category, source_name").eq("chat_id", chat_id).gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
-
-        extra_income = 0.0
-        for inc in (incomes_res.data or []):
-            cat = (inc.get("category") or "").lower()
-            src = (inc.get("source_name") or "").lower()
-            if "salary" not in cat and "salary" not in src:
-                extra_income += float(inc["amount"])
+        extra_income = sum(float(inc["amount"]) for inc in (incomes_res.data or []) if "salary" not in str(inc.get("category")).lower() and "salary" not in str(inc.get("source_name")).lower())
 
         total_inflow = base_salary + extra_income
-
         inst_res = supabase.table("loan_installments").select("emi_amount, status").eq("chat_id", chat_id).eq("installment_month", year_month).execute()
         installments = inst_res.data or []
         total_emis = sum(float(inst["emi_amount"]) for inst in installments)
         paid_emis = sum(float(inst["emi_amount"]) for inst in installments if inst["status"] == "paid")
-
         safe_house_budget = total_inflow - total_emis
 
         tx_res = supabase.table("transactions").select("amount, category").eq("chat_id", chat_id).eq("type", "expense").neq("category", "Loans & EMIs").gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
@@ -519,22 +526,13 @@ class DBService:
         percentage_used = (actual_house_spent / safe_house_budget * 100) if safe_house_budget > 0 else 100.0
 
         warning_status = "safe"
-        if percentage_used >= 100:
-            warning_status = "breached"
-        elif percentage_used >= 90:
-            warning_status = "critical"
-        elif percentage_used >= 75:
-            warning_status = "warning"
+        if percentage_used >= 100: warning_status = "breached"
+        elif percentage_used >= 90: warning_status = "critical"
+        elif percentage_used >= 75: warning_status = "warning"
             
         return {
-            "year_month": year_month,
-            "base_salary": base_salary,
-            "extra_income": extra_income,
-            "total_inflow": total_inflow,
-            "total_emis": total_emis,
-            "paid_emis": paid_emis,
-            "safe_house_budget": safe_house_budget,
-            "actual_house_spent": actual_house_spent,
-            "percentage_used": round(percentage_used, 1),
-            "warning_status": warning_status
+            "year_month": year_month, "base_salary": base_salary, "extra_income": extra_income,
+            "total_inflow": total_inflow, "total_emis": total_emis, "paid_emis": paid_emis,
+            "safe_house_budget": safe_house_budget, "actual_house_spent": actual_house_spent,
+            "percentage_used": round(percentage_used, 1), "warning_status": warning_status
         }
