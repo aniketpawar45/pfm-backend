@@ -1,30 +1,35 @@
 import os
-from fastapi import APIRouter, Header, HTTPException
-from api.services.db_service import DBService
-from api.services.telegram_service import TelegramService
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from supabase import create_client
+import httpx
 
-router = APIRouter()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-@router.get("/daily")
-def run_daily_cron(authorization: str = Header(None)):
-    cron_secret = os.getenv("CRON_SECRET")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+IST = ZoneInfo("Asia/Kolkata")
+
+async def run_daily_subscription_checks():
+    # Get current date explicitly in IST
+    today_ist = datetime.now(IST).date().isoformat()
     
-    # Secure the endpoint
-    if not cron_secret:
-        raise HTTPException(status_code=500, detail="CRON_SECRET environment variable is missing.")
+    response = supabase.table("subscriptions").select("*").eq("status", "active").eq("next_billing_date", today_ist).execute()
     
-    expected_header = f"Bearer {cron_secret}"
-    if authorization != expected_header:
-        raise HTTPException(status_code=401, detail="Unauthorized request to cron endpoint.")
+    if not response.data:
+        return {"processed": 0, "message": "No subscriptions due today in IST."}
 
-    # Process all recurring bills & budget alerts
-    alerts = DBService.process_daily_cron()
-    
-    # Broadcast to Telegram
-    for chat_id, message in alerts:
-        try:
-            TelegramService.send_message(chat_id, message)
-        except Exception as e:
-            print(f"Failed to send cron alert to {chat_id}: {e}")
+    count = 0
+    async with httpx.AsyncClient() as client:
+        for sub in response.data:
+            chat_id = sub["chat_id"]
+            name = sub["name"]
+            amount = sub["amount"]
+            
+            msg = f"Reminder: Your subscription for '{name}' (₹{amount:.2f}) is due today!"
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            await client.post(url, json={"chat_id": chat_id, "text": msg})
+            count += 1
 
-    return {"status": "success", "processed_alerts": len(alerts)}
+    return {"processed": count, "status": "success"}
