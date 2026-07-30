@@ -1,75 +1,49 @@
-# 🤖 Salary-Anchored PFM Telegram Bot
+# 🤖 Salary-Anchored PFM Telegram Bot & FastAPI Backend
 
-A high-performance, intelligent Personal Finance Management (PFM) Telegram bot built on **FastAPI**, deployed on **Vercel**, and backed by **Supabase**. It prioritizes debt management, automated budget guardrails, and precise tracking of bank and personal loans using a strict **"Salary-First"** financial engine.
-
----
-
-## 🛠️ Tech Stack & Architecture
-
-* **Backend Framework:** FastAPI (Python)
-* **Hosting / Runtime:** Vercel (Serverless Functions)
-* **Database:** Supabase (PostgreSQL with Row Level Security)
-* **AI Parsing Engine:** Groq API (`llama-3.3-70b-versatile`) for natural language extraction
-* **Interface:** Telegram Bot API (with inline keyboard callbacks & matplotlib charts)
+An intelligent, secure, and feature-rich Personal Finance Manager (PFM) bot powered by FastAPI, Supabase, Groq AI (Llama-3.3-70b), and Matplotlib, deployed serverlessly on Vercel.
 
 ---
 
-## 💡 Core Financial Engine: The "Salary-First" Model
+## 🚀 Tech Stack
 
-The system enforces strict financial discipline by locking away mandatory monthly debt obligations before allowing lifestyle spending to be tracked:
-
-* **Total Monthly Inflow** = Base Salary + Variable Extra Incomes
-* **Safe House Budget** = Total Monthly Inflow - Mandatory EMIs for the Month
-
-The bot continuously evaluates your lifestyle spending against your Safe House Budget and triggers warnings at specific thresholds:
-* 🟢 **Safe:** Under 75% utilized
-* 🟡 **Warning:** 75% – 89% utilized
-* 🟠 **Critical:** 90% – 99% utilized
-* 🔴 **Breached:** 100%+ utilized
+*   **Backend Framework**: FastAPI (Python)
+*   **Database**: Supabase (PostgreSQL)
+*   **AI Engine**: Groq API (`llama-3.3-70b-versatile`) for natural language parsing and financial advisory
+*   **Data Visualization**: Matplotlib (Dark-themed analytics charts)
+*   **Hosting & Automation**: Vercel (Serverless functions + Daily Cron Jobs)
+*   **Messaging Interface**: Telegram Bot API
 
 ---
 
-## 🚀 Commands & Natural Language Guide
+## 📋 Comprehensive Feature List
 
-### 1. Salary & Budget Configuration
-* **`/setsalary [amount]`**
-  * *Example:* `/setsalary 75000`
-  * *Description:* Sets your predictable monthly baseline income to anchor your budget guardrails.
-* **`/budget [YYYY-MM]`**
-  * *Example:* `/budget` or `/budget 2026-07`
-  * *Description:* Displays your current or specific month's inflow breakdown, total EMIs, safe house budget, and utilization percentage.
+### ⚙️ Setup & Budgeting
+*   `/setsalary [amount]` — Set or update your monthly base salary to anchor your budget limits.
+*   `/budget` — Check your **Safe House Budget** and financial guardrails. Tracks base salary, extra income, total inflows, mandatory EMIs, actual spending, and real-time utilization status (🟢 Safe, 🟡 Warning, 🟠 Critical, 🔴 Breached).
 
-### 2. Loan & Liability Management
-* **`/addloan [Name] | [bank/family] | [high/low] | [Principal] | [InterestRate%] | [TenureMonths]`**
-  * *Example:* `/addloan Sushma | family | high | 150000 | 0 | 6`
-  * *Description:* Adds a loan, calculates the reducing-balance or flat EMI, and automatically generates a month-by-month installment schedule (`YYYY-MM`) in the database.
-* **`/loans`**
-  * *Example:* `/loans`
-  * *Description:* Lists all active liabilities, remaining principal balances, priority tiers, lender types, and paid percentages.
+### 💳 Debt & Loan Management
+*   `/addloan` — Add new loans and amortization schedules (supports principal amount, tenure in months, interest rates, and custom start dates with auto-calculation of past/pending EMIs).
+*   `/loans` — View your active loan portfolio, remaining balances, paid percentages, and upcoming EMIs.
+*   `/deleteloan [Name]` — Remove a loan and its associated payment schedule entirely.
 
-### 3. Natural Language Transaction & EMI Logging
-You don't need rigid syntax for everyday tracking. The AI parser processes natural language inputs directly:
+### 🔄 Subscriptions (Auto-Billing)
+*   `/addsub` — Add recurring bills (e.g., Netflix, Gym) specifying name, amount, cycle (`monthly` or `yearly`), and next billing date.
+*   `/subs` — List all active subscriptions and calculate your average monthly financial drain.
+*   `/delsub [Name]` — Remove a subscription from auto-tracking.
 
-* **Logging Expenses:**
-  * *Example:* `"Paid 450 for lunch at McDonald's"`
-  * *Example:* `"Spent 2400 on groceries"`
-* **Logging Variable Extra Incomes (Passive addition without altering baseline salary):**
-  * *Example:* `"I received 10000 extra from freelance"`
-  * *Example:* `"Got a bonus of 15000"`
-* **Automatic EMI / Loan Repayment Matching:**
-  * *Example:* `"I have paid 24k emi to Sushma"`
-  * *Description:* The bot automatically matches the lender name against your active loan list, locates the current month's pending installment, marks it as paid, reduces your remaining loan principal, and logs the expense under `Loans & EMIs`.
+### 🧠 AI & Analytics
+*   `/ask [question]` — Get personalized AI financial advice based directly on your transaction data and financial profile (powered by Groq).
+*   **Natural Language Expense Logging** — Type naturally to log expenses or income (e.g., *"Paid ₹500 for lunch"* or *"Received salary"*). The AI parses amounts, categories, and descriptions, and automatically matches incoming payments against active loan EMIs.
+*   `/summary` or `/report` — Get a monthly financial breakdown of total income, expenses, net balance, and category-wise spending.
+*   `/statistics` — Deep analytics covering savings rates, average daily spend, and largest single expenses.
+*   `/chart` — Generate and receive a custom dark-themed expense category distribution pie chart.
+*   `/export` — Download a complete CSV transaction statement directly in Telegram.
+*   `/delete` — Interactive inline-keyboard transaction manager to browse and select multiple transactions for deletion.
 
-### 4. Financial Reports & Management
-* **`/summary [Month/Year]`**
-  * *Example:* `/summary` or `/summary July` or `/summary 2026`
-  * *Description:* Generates a complete financial snapshot showing total income, total expenses, net balance, and category-wise breakdowns.
-* **`/chart [Month/Year]`**
-  * *Example:* `/chart`
-  * *Description:* Renders and sends a clean dark-themed visual pie chart of your expense categories.
-* **`/export`**
-  * *Example:* `/export`
-  * *Description:* Generates and uploads a downloadable `.csv` statement of your transaction ledger.
-* **`/delete [Month/Year]`**
-  * *Example:* `/delete` or `/delete June`
-  * *Description:* Opens an interactive inline-keyboard manager allowing you to select and safely delete incorrect or duplicate transactions across paginated views.
+### ⏰ Automated Background Tasks
+*   **Vercel Cron**: Configured to run automatically every day at **7:05 AM IST** (`35 1 * * *`) via the `/cron/daily` endpoint to handle automated subscription alerts and system checks.
+
+---
+
+## 🔒 Security & Authentication
+*   **Bulletproof Gatekeeper**: Protected by an `ALLOWED_TELEGRAM_IDS` environment variable check. Unauthorized users are blocked instantly with an access-restricted notice.
