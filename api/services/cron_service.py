@@ -14,7 +14,11 @@ IST = ZoneInfo("Asia/Kolkata")
 async def run_daily_subscription_checks():
     today_ist = datetime.now(IST).date().isoformat()
     
-    response = supabase.table("subscriptions").select("*").eq("status", "active").eq("next_billing_date", today_ist).execute()
+    try:
+        response = supabase.table("subscriptions").select("*").eq("status", "active").eq("next_billing_date", today_ist).execute()
+    except Exception as e:
+        print(f"Supabase query error: {e}")
+        return {"status": "error", "detail": str(e)}
     
     if not response.data:
         return {"processed": 0, "message": "No subscriptions due today in IST."}
