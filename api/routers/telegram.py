@@ -32,19 +32,21 @@ async def telegram_webhook(request: Request):
         if not chat_id:
             return {"ok": True}
 
-        # 2. OPAQUE AUTHENTICATION GATEKEEPER
+        # 2. BULLETPROOF AUTHENTICATION GATEKEEPER
         allowed_ids_env = os.getenv("ALLOWED_TELEGRAM_IDS", "")
         
-        allowed_ids = []
-        if allowed_ids_env:
-            for id_str in allowed_ids_env.split(","):
-                try:
-                    allowed_ids.append(int(id_str.strip()))
-                except ValueError:
-                    pass
+        # Convert everything to strings and strip accidental quotes/spaces from Vercel
+        allowed_ids = [
+            id_str.strip().strip("\"'") 
+            for id_str in allowed_ids_env.split(",") 
+            if id_str.strip()
+        ]
         
-        # Block instantly without leaking the chat ID, Vercel info, or system instructions
-        if not allowed_ids or chat_id not in allowed_ids:
+        # Convert incoming chat_id to string for safe comparison
+        str_chat_id = str(chat_id)
+        
+        # Block instantly without leaking info
+        if not allowed_ids or str_chat_id not in allowed_ids:
             TelegramService.send_message(
                 chat_id, 
                 "⛔️ **Access Restricted**\n\nThis is a private Personal Finance Manager. You do not have authorization to use this service."
