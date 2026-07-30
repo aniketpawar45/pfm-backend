@@ -1,8 +1,10 @@
 import os
+import re
 import tempfile
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Request, HTTPException
 from api.services.telegram_service import TelegramService
 from api.services.db_service import DBService
@@ -35,17 +37,14 @@ async def telegram_webhook(request: Request):
         # 2. BULLETPROOF AUTHENTICATION GATEKEEPER
         allowed_ids_env = os.getenv("ALLOWED_TELEGRAM_IDS", "")
         
-        # Convert everything to strings and strip accidental quotes/spaces from Vercel
         allowed_ids = [
             id_str.strip().strip("\"'") 
             for id_str in allowed_ids_env.split(",") 
             if id_str.strip()
         ]
         
-        # Convert incoming chat_id to string for safe comparison
         str_chat_id = str(chat_id)
         
-        # Block instantly without leaking info
         if not allowed_ids or str_chat_id not in allowed_ids:
             TelegramService.send_message(
                 chat_id, 
@@ -53,8 +52,6 @@ async def telegram_webhook(request: Request):
             )
             return {"ok": True}
         
-        # --- PROCEED WITH NORMAL BOT LOGIC ---
-
         # Handle Callback Queries (Inline Keyboards for Delete / Pagination)
         if "callback_query" in body:
             callback = body["callback_query"]
@@ -107,7 +104,6 @@ async def telegram_webhook(request: Request):
         # Handle Commands
         if text_stripped.startswith("/start"):
             TelegramService.set_bot_commands()
-
             welcome_msg = (
                 "🤖 **Welcome to your Salary-Anchored PFM Bot!**\n\n"
                 "Your intelligent financial co-pilot for automated budgeting, debt tracking, and expense logging.\n\n"
@@ -120,7 +116,8 @@ async def telegram_webhook(request: Request):
                 "💳 **DEBT & LOAN MANAGEMENT**\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "• `/addloan` — Add new loan & payment schedule\n"
-                "• `/loans` — View active liabilities & amortization\n\n"
+                "• `/loans` — View active liabilities & amortization\n"
+                "• `/deleteloan` — Remove a loan entirely\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "📊 **REPORTS & ANALYTICS**\n"
                 "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -152,7 +149,6 @@ async def telegram_webhook(request: Request):
             parts = text_stripped.split()
             year_month = parts[1] if len(parts) > 1 else None
             if not year_month:
-                from datetime import datetime, timezone, timedelta
                 IST = timezone(timedelta(hours=5, minutes=30))
                 year_month = datetime.now(IST).strftime("%Y-%m")
             
@@ -175,42 +171,76 @@ async def telegram_webhook(request: Request):
 
         elif text_stripped.startswith("/addloan"):
             content = text_stripped.replace("/addloan", "").strip()
-            parts = [p.strip() for p in content.split("|")]
-            if len(parts) < 6:
+            
+            if not content:
+                help_msg = (
+                    "💡 **How to add a loan:**\n\n"
+                    "Provide the details separated by commas:\n"
+                    "`/addloan Name, Amount, Months, [Interest%], [Date YYYY-MM-DD]`\n\n"
+                    "**Examples:**\n"
+                    "• `/addloan HDFC Bank, 50000, 12` *(Defaults to 0% interest & today's date)*\n"
+                    "• `/addloan Car Loan, 150000, 36, 8.5` *(8.5% interest)*\n"
+                    "• `/addloan Personal, 10000, 6, 12, 2026-07-25` *(Specific disbursement date)*"
+                )
+                TelegramService.send_message(chat_id, help_msg)
+                return {"ok": True}
+
+            # Split gracefully by comma or pipe
+            parts = [p.strip() for p in re.split(r'[,|]', content) if p.strip()]
+            
+            # Fallback to space split if no commas/pipes were used
+            if len(parts) == 1 and len(content.split()) >= 3:
+                parts = content.split()
+                
+            if len(parts) < 3:
+                TelegramService.send_message(chat_id, "⚠️ Please provide at least the **Name**, **Amount**, and **Months**.\nExample: `/addloan HDFC, 50000, 12`")
+                return {"ok": True}
+
+            try:
+                name = parts[0]
+                principal = float(parts[1].replace(',', ''))
+                tenure_months = int(parts[2])
+                
+                # Optional Parameters with Defaults
+                interest_rate = float(parts[3]) if len(parts) > 3 else 0.0
+                
+                IST = timezone(timedelta(hours=5, minutes=30))
+                default_date = datetime.now(IST).strftime("%Y-%m-%d")
+                disbursement_date = parts[4] if len(parts) > 4 else default_date
+                
+                # Basic date validation
+                try:
+                    datetime.strptime(disbursement_date, "%Y-%m-%d")
+                except ValueError:
+                    TelegramService.send_message(chat_id, f"⚠️ Invalid date format '{disbursement_date}'. Please use YYYY-MM-DD.")
+                    return {"ok": True}
+
+                # Save to database
+                loan = DBService.add_loan_with_schedule(
+                    chat_id=chat_id,
+                    name=name,
+                    lender_type="bank",
+                    priority="high",
+                    principal=principal,
+                    interest_rate=interest_rate,
+                    tenure_months=tenure_months,
+                    disbursement_date=disbursement_date
+                )
+                
                 TelegramService.send_message(
                     chat_id,
-                    "⚠️ **Format error:** Missing parameters.\n\n"
-                    "Use: `/addloan Name | bank/family | high/low | Principal | Interest% | Months`\n"
-                    "Example: `/addloan Sushma | family | high | 150000 | 0 | 6`"
+                    f"✅ **Loan Added Successfully!**\n\n"
+                    f"• **Name:** {loan.get('name', name)}\n"
+                    f"• **Principal:** {principal:,.2f}\n"
+                    f"• **Disbursed On:** {disbursement_date}\n"
+                    f"• **Interest:** {interest_rate}%\n"
+                    f"• **Monthly EMI:** {float(loan.get('emi_amount', 0)):,.2f}\n"
+                    f"• **Tenure:** {tenure_months} months"
                 )
-            else:
-                try:
-                    name = parts[0]
-                    lender_type = parts[1].lower()
-                    priority = parts[2].lower()
-                    principal = float(parts[3])
-                    interest_rate = float(parts[4])
-                    tenure_months = int(parts[5])
-
-                    loan = DBService.add_loan_with_schedule(
-                        chat_id=chat_id,
-                        name=name,
-                        lender_type=lender_type,
-                        priority=priority,
-                        principal=principal,
-                        interest_rate=interest_rate,
-                        tenure_months=tenure_months
-                    )
-                    TelegramService.send_message(
-                        chat_id,
-                        f"✅ **Loan Added Successfully!**\n\n"
-                        f"• **Name:** {loan['name']}\n"
-                        f"• **Principal:** {loan['principal']:,.2f}\n"
-                        f"• **Monthly EMI:** {loan['emi_amount']:,.2f}\n"
-                        f"• **Tenure:** {loan['tenure_months']} months"
-                    )
-                except Exception as e:
-                    TelegramService.send_message(chat_id, f"⚠️ Error adding loan: {str(e)}")
+            except ValueError:
+                TelegramService.send_message(chat_id, "⚠️ Format error: Ensure Amount, Months, and Interest are numbers.")
+            except Exception as e:
+                TelegramService.send_message(chat_id, f"⚠️ Error saving loan: {str(e)}")
 
         elif text_stripped.startswith("/loans"):
             loans = DBService.get_user_loans(chat_id)
@@ -228,6 +258,29 @@ async def telegram_webhook(request: Request):
                         f"  EMI: {float(l['emi_amount']):,.2f} | Priority: {l['priority'].upper()}\n\n"
                     )
                 TelegramService.send_message(chat_id, msg)
+
+        elif text_stripped.startswith("/deleteloan"):
+            parts = text_stripped.split(maxsplit=1)
+            
+            if len(parts) < 2:
+                loans = DBService.get_user_loans(chat_id)
+                if not loans:
+                    TelegramService.send_message(chat_id, "ℹ️ You have no active loans to delete.")
+                else:
+                    msg = "🗑️ **Delete a Loan**\n\nTo delete a loan, reply with:\n`/deleteloan [Loan Name]`\n\n**Your Active Loans:**\n"
+                    for l in loans:
+                        msg += f"• `{l['name']}`\n"
+                    TelegramService.send_message(chat_id, msg)
+            else:
+                loan_name = parts[1].strip()
+                try:
+                    deleted_name = DBService.delete_loan(chat_id, loan_name)
+                    if deleted_name:
+                        TelegramService.send_message(chat_id, f"✅ Successfully deleted the loan **{deleted_name}** and its scheduled payments.")
+                    else:
+                        TelegramService.send_message(chat_id, f"⚠️ Could not find a loan named '{loan_name}'. Type `/deleteloan` to see the exact names.")
+                except Exception as e:
+                    TelegramService.send_message(chat_id, f"⚠️ Error deleting loan: {str(e)}")
 
         elif text_stripped.startswith("/summary") or text_stripped.startswith("/report"):
             parts = text_stripped.split(maxsplit=1)
