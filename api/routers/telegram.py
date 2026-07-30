@@ -1,6 +1,8 @@
 import os
 import base64
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 import httpx
 from groq import Groq
@@ -17,6 +19,8 @@ ALLOWED_IDS = [int(x.strip()) for x in os.getenv("ALLOWED_TELEGRAM_IDS", "").spl
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+IST = ZoneInfo("Asia/Kolkata")
+
 @router.post("/webhook")
 async def telegram_webhook(request: Request):
     try:
@@ -28,19 +32,17 @@ async def telegram_webhook(request: Request):
         message = data["message"]
         chat_id = message["chat"]["id"]
 
-        # Security check: restrict access to allowed Telegram IDs
+        # Security check
         if ALLOWED_IDS and chat_id not in ALLOWED_IDS:
             await send_telegram_message(chat_id, "Unauthorized access.")
             return {"status": "unauthorized"}
 
         # 1. Handle Receipt Photo Uploads
         if "photo" in message:
-            # Grab the highest-resolution photo (last in the array)
             photo = message["photo"][-1]
             file_id = photo["file_id"]
             
             async with httpx.AsyncClient() as client:
-                # Fetch file path from Telegram API
                 file_path_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
                 res = await client.get(file_path_url)
                 file_info = res.json()
@@ -50,17 +52,13 @@ async def telegram_webhook(request: Request):
                     return {"status": "error"}
                 
                 file_path = file_info["result"]["file_path"]
-                
-                # Download binary image bytes from Telegram servers
                 download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
                 img_res = await client.get(download_url)
                 img_bytes = img_res.content
             
-            # Convert binary bytes to Base64 data URI
             base64_image = base64.b64encode(img_bytes).decode("utf-8")
             data_uri = f"data:image/jpeg;base64,{base64_image}"
             
-            # Parse receipt using Groq Vision AI
             parsed = parse_receipt_with_ai(data_uri)
             
             if parsed and "amount" in parsed:
@@ -74,7 +72,7 @@ async def telegram_webhook(request: Request):
                 await send_telegram_message(
                     chat_id, 
                     f"Receipt Scanned & Saved!\n"
-                    f"Amount: ${parsed['amount']}\n"
+                    f"Amount: ₹{parsed['amount']:.2f}\n"
                     f"Category: {parsed.get('category', 'Shopping')}\n"
                     f"Merchant/Desc: {parsed.get('description', 'N/A')}"
                 )
@@ -89,16 +87,15 @@ async def telegram_webhook(request: Request):
         if text.startswith("/start"):
             await send_telegram_message(
                 chat_id, 
-                "Welcome to your PFM Bot!\n\n"
-                "• Send text like: 'Spent $25 on groceries'\n"
+                "Welcome to your PFM Bot (INR / IST Mode)!\n\n"
+                "• Send text like: 'Spent ₹500 on groceries' or 'Rs 250 for coffee'\n"
                 "• Upload receipt photos for automatic scanning\n"
-                "• Use /summary to check spending"
+                "• Use /summary to check your total spending"
             )
         elif text.startswith("/summary"):
             summary_text = get_user_summary(chat_id)
             await send_telegram_message(chat_id, summary_text)
         else:
-            # Parse natural language text expense via Groq AI
             parsed = parse_expense_with_ai(text)
             if parsed and "amount" in parsed:
                 supabase.table("transactions").insert({
@@ -109,12 +106,12 @@ async def telegram_webhook(request: Request):
                 }).execute()
                 await send_telegram_message(
                     chat_id, 
-                    f"Recorded: ${parsed['amount']} for {parsed.get('category', 'General')}"
+                    f"Recorded: ₹{parsed['amount']:.2f} for {parsed.get('category', 'General')}"
                 )
             else:
                 await send_telegram_message(
                     chat_id, 
-                    "Could not parse expense. Try something like: 'Spent $20 on coffee' or upload a receipt photo."
+                    "Could not parse expense. Try something like: 'Spent ₹400 on dinner'."
                 )
 
         return {"status": "ok"}
@@ -124,7 +121,7 @@ async def telegram_webhook(request: Request):
 
 def parse_receipt_with_ai(data_uri: str) -> dict:
     prompt = (
-        "Analyze this receipt image. Extract the total amount (as a float), "
+        "Analyze this receipt image. Extract the total amount (as a float in Indian Rupees INR), "
         "category (e.g., Food, Groceries, Transport, Shopping), and merchant name "
         "or description (as a string). Return strictly as JSON with keys: amount, category, description."
     )
@@ -148,7 +145,7 @@ def parse_receipt_with_ai(data_uri: str) -> dict:
         return {}
 
 def parse_expense_with_ai(text: str) -> dict:
-    prompt = f"Extract amount (float), category (string), and description (string) from this text: '{text}'. Return strictly as JSON with keys: amount, category, description."
+    prompt = f"Extract amount (float in Indian Rupees INR), category (string), and description (string) from this text: '{text}'. Return strictly as JSON with keys: amount, category, description."
     try:
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -164,7 +161,7 @@ def get_user_summary(chat_id: int) -> str:
     if not res.data:
         return "No transactions recorded yet."
     total = sum(item["amount"] for item in res.data)
-    return f"Total Spending: ${total:.2f}\nTotal Transactions: {len(res.data)}"
+    return f"Total Spending: ₹{total:.2f}\nTotal Transactions: {len(res.data)}"
 
 async def send_telegram_message(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
