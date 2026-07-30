@@ -38,12 +38,12 @@ class DBService:
         for item in items:
             if not item.get("is_transaction", True) or item.get("amount") is None:
                 continue
-            
+
             tx_type = item.get("type", "expense")
             desc = item.get("description") or "Miscellaneous"
             amt = float(item.get("amount"))
             cat = item.get("category") or "Miscellaneous"
-            
+
             raw_date = item.get("date")
             t_date = current_date_str
             if raw_date and isinstance(raw_date, str):
@@ -58,7 +58,7 @@ class DBService:
             if is_emi or lender_name or "emi" in desc.lower():
                 loans_res = supabase.table("loans").select("*").eq("chat_id", chat_id).eq("status", "active").execute()
                 active_loans = loans_res.data or []
-                
+
                 for loan in active_loans:
                     loan_name_lower = loan["name"].lower()
                     if lender_name and lender_name in loan_name_lower:
@@ -71,7 +71,7 @@ class DBService:
             if matched_loan:
                 inst_res = supabase.table("loan_installments").select("*").eq("loan_id", matched_loan["id"]).eq("status", "pending").order("installment_month").execute()
                 installments = inst_res.data or []
-                
+
                 target_inst = None
                 for inst in installments:
                     if inst["installment_month"] == current_month_str:
@@ -104,7 +104,7 @@ class DBService:
                         "date": t_date
                     }
                     tx_resp = supabase.table("transactions").insert(tx_record).execute()
-                    
+
                     if tx_resp.data:
                         processed_results.append({
                             **tx_resp.data[0],
@@ -152,7 +152,7 @@ class DBService:
         IST = timezone(timedelta(hours=5, minutes=30))
         now_ist = datetime.now(IST)
         query_arg = query_arg.strip().lower()
-        
+
         months = {
             'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
             'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
@@ -281,19 +281,19 @@ class DBService:
         start_date, end_date, title = cls.parse_date_range(query_arg)
         response = supabase.table("transactions").select("*").eq("chat_id", chat_id).gte("date", start_date).lte("date", end_date).execute()
         records = response.data or []
-        
+
         total_expense = sum(float(r["amount"]) for r in records if r["type"] == "expense")
         total_income = sum(float(r["amount"]) for r in records if r["type"] == "income")
         net_balance = total_income - total_expense
-        
+
         expenses = [float(r["amount"]) for r in records if r["type"] == "expense"]
         max_expense = max(expenses) if expenses else 0.0
-        
+
         d_start = datetime.fromisoformat(start_date)
         d_end = datetime.fromisoformat(end_date)
         days_count = max(1, (d_end - d_start).days + 1)
         avg_daily_spend = total_expense / days_count
-        
+
         savings_rate = (net_balance / total_income * 100) if total_income > 0 else 0.0
 
         return {
@@ -355,11 +355,11 @@ class DBService:
         principal: float, 
         interest_rate: float, 
         tenure_months: int, 
-        start_date_str: str = None
+        disbursement_date: str = None
     ) -> dict:
         supabase = cls.get_client()
-        s_date = datetime.strptime(start_date_str, "%Y-%m-%d").date() if start_date_str else datetime.now().date()
-        
+        s_date = datetime.strptime(disbursement_date, "%Y-%m-%d").date() if disbursement_date else datetime.now().date()
+
         if interest_rate == 0:
             emi_amt = principal / tenure_months
         else:
@@ -383,14 +383,14 @@ class DBService:
         loan_res = supabase.table("loans").insert(loan_record).execute()
         if not loan_res.data:
             raise ValueError("Failed to create loan record.")
-        
+
         created_loan = loan_res.data[0]
         loan_id = created_loan["id"]
 
         installments = []
         curr_year = s_date.year
         curr_month = s_date.month
-        
+
         for i in range(tenure_months):
             month_str = f"{curr_year}-{curr_month:02d}"
             installments.append({
@@ -409,6 +409,31 @@ class DBService:
         return created_loan
 
     @classmethod
+    def delete_loan(cls, chat_id: int, loan_name: str):
+        """Safely deletes a loan and its associated payment schedule to prevent DB crashes."""
+        try:
+            supabase = cls.get_client()
+            
+            # Find the exact loan ID using case-insensitive search
+            res = supabase.table("loans").select("id, name").eq("chat_id", chat_id).ilike("name", f"%{loan_name.strip()}%").execute()
+            if not res.data:
+                return None
+            
+            loan_id = res.data[0]["id"]
+            actual_name = res.data[0]["name"]
+            
+            # Delete associated loan installments first (Prevents Foreign Key constraint errors)
+            supabase.table("loan_installments").delete().eq("loan_id", loan_id).execute()
+            
+            # Delete the loan itself
+            supabase.table("loans").delete().eq("id", loan_id).execute()
+            
+            return actual_name
+        except Exception as e:
+            print(f"Error deleting loan: {e}")
+            raise e
+
+    @classmethod
     def get_user_loans(cls, chat_id: int) -> list:
         supabase = cls.get_client()
         res = supabase.table("loans").select("*").eq("chat_id", chat_id).execute()
@@ -420,14 +445,13 @@ class DBService:
         base_salary = cls.get_user_salary(chat_id)
 
         incomes_res = supabase.table("incomes").select("amount, category, source_name").eq("chat_id", chat_id).gte("date", f"{year_month}-01").lte("date", f"{year_month}-31").execute()
-        
+
         extra_income = 0.0
         for inc in (incomes_res.data or []):
             cat = (inc.get("category") or "").lower()
             src = (inc.get("source_name") or "").lower()
             if "salary" not in cat and "salary" not in src:
                 extra_income += float(inc["amount"])
-
         total_inflow = base_salary + extra_income
 
         inst_res = supabase.table("loan_installments").select("emi_amount, status").eq("chat_id", chat_id).eq("installment_month", year_month).execute()
@@ -449,7 +473,7 @@ class DBService:
             warning_status = "critical"
         elif percentage_used >= 75:
             warning_status = "warning"
-
+            
         return {
             "year_month": year_month,
             "base_salary": base_salary,
