@@ -452,6 +452,7 @@ class DBService:
             src = (inc.get("source_name") or "").lower()
             if "salary" not in cat and "salary" not in src:
                 extra_income += float(inc["amount"])
+
         total_inflow = base_salary + extra_income
 
         inst_res = supabase.table("loan_installments").select("emi_amount, status").eq("chat_id", chat_id).eq("installment_month", year_month).execute()
