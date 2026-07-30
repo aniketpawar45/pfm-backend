@@ -6,7 +6,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Request, HTTPException
-from api.services.telegram_service import TelegramService
 from api.services.db_service import DBService
 from api.services.ai_service import AIService
 
