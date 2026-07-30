@@ -24,7 +24,6 @@ async def telegram_webhook(request: Request):
     try:
         body = await request.json()
         
-        # 1. EXTRACT CHAT ID EARLY FOR AUTHENTICATION
         chat_id = None
         if "callback_query" in body:
             chat_id = body["callback_query"]["message"]["chat"]["id"]
@@ -34,15 +33,9 @@ async def telegram_webhook(request: Request):
         if not chat_id:
             return {"ok": True}
 
-        # 2. BULLETPROOF AUTHENTICATION GATEKEEPER
+        # BULLETPROOF AUTHENTICATION GATEKEEPER
         allowed_ids_env = os.getenv("ALLOWED_TELEGRAM_IDS", "")
-        
-        allowed_ids = [
-            id_str.strip().strip("\"'") 
-            for id_str in allowed_ids_env.split(",") 
-            if id_str.strip()
-        ]
-        
+        allowed_ids = [id_str.strip().strip("\"'") for id_str in allowed_ids_env.split(",") if id_str.strip()]
         str_chat_id = str(chat_id)
         
         if not allowed_ids or str_chat_id not in allowed_ids:
@@ -176,19 +169,16 @@ async def telegram_webhook(request: Request):
                 help_msg = (
                     "💡 **How to add a loan:**\n\n"
                     "Provide the details separated by commas:\n"
-                    "`/addloan Name, Amount, Months, [Interest%], [Date YYYY-MM-DD]`\n\n"
+                    "`/addloan Name, Amount, Months, [Interest%], [1st EMI Date YYYY-MM-DD]`\n\n"
                     "**Examples:**\n"
                     "• `/addloan HDFC Bank, 50000, 12` *(Defaults to 0% interest & today's date)*\n"
                     "• `/addloan Car Loan, 150000, 36, 8.5` *(8.5% interest)*\n"
-                    "• `/addloan Personal, 10000, 6, 12, 2026-07-25` *(Specific disbursement date)*"
+                    "• `/addloan Personal, 10000, 6, 12, 2026-02-15` *(Automatically calculates past paid EMIs based on 1st EMI date!)*"
                 )
                 TelegramService.send_message(chat_id, help_msg)
                 return {"ok": True}
 
-            # Split gracefully by comma or pipe
             parts = [p.strip() for p in re.split(r'[,|]', content) if p.strip()]
-            
-            # Fallback to space split if no commas/pipes were used
             if len(parts) == 1 and len(content.split()) >= 3:
                 parts = content.split()
                 
@@ -201,21 +191,18 @@ async def telegram_webhook(request: Request):
                 principal = float(parts[1].replace(',', ''))
                 tenure_months = int(parts[2])
                 
-                # Optional Parameters with Defaults
                 interest_rate = float(parts[3]) if len(parts) > 3 else 0.0
                 
                 IST = timezone(timedelta(hours=5, minutes=30))
                 default_date = datetime.now(IST).strftime("%Y-%m-%d")
-                disbursement_date = parts[4] if len(parts) > 4 else default_date
+                first_emi_date = parts[4] if len(parts) > 4 else default_date
                 
-                # Basic date validation
                 try:
-                    datetime.strptime(disbursement_date, "%Y-%m-%d")
+                    datetime.strptime(first_emi_date, "%Y-%m-%d")
                 except ValueError:
-                    TelegramService.send_message(chat_id, f"⚠️ Invalid date format '{disbursement_date}'. Please use YYYY-MM-DD.")
+                    TelegramService.send_message(chat_id, f"⚠️ Invalid date format '{first_emi_date}'. Please use YYYY-MM-DD.")
                     return {"ok": True}
 
-                # Save to database
                 loan = DBService.add_loan_with_schedule(
                     chat_id=chat_id,
                     name=name,
@@ -224,18 +211,20 @@ async def telegram_webhook(request: Request):
                     principal=principal,
                     interest_rate=interest_rate,
                     tenure_months=tenure_months,
-                    disbursement_date=disbursement_date
+                    first_emi_date=first_emi_date
                 )
                 
                 TelegramService.send_message(
                     chat_id,
                     f"✅ **Loan Added Successfully!**\n\n"
                     f"• **Name:** {loan.get('name', name)}\n"
-                    f"• **Principal:** {principal:,.2f}\n"
-                    f"• **Disbursed On:** {disbursement_date}\n"
-                    f"• **Interest:** {interest_rate}%\n"
+                    f"• **Original Principal:** {principal:,.2f}\n"
+                    f"• **1st EMI Date:** {first_emi_date}\n"
                     f"• **Monthly EMI:** {float(loan.get('emi_amount', 0)):,.2f}\n"
-                    f"• **Tenure:** {tenure_months} months"
+                    f"-----------------------------------\n"
+                    f"• **Past EMIs Auto-Paid:** {loan.get('passed_emis', 0)}\n"
+                    f"• **Pending EMIs:** {loan.get('pending_emis', tenure_months)}\n"
+                    f"• **Current Remaining:** {float(loan.get('remaining_amount', principal)):,.2f}"
                 )
             except ValueError:
                 TelegramService.send_message(chat_id, "⚠️ Format error: Ensure Amount, Months, and Interest are numbers.")
@@ -247,15 +236,17 @@ async def telegram_webhook(request: Request):
             if not loans:
                 TelegramService.send_message(chat_id, "ℹ️ You have no active or recorded loans.")
             else:
-                msg = "📋 **Your Loan Portfolio:**\n\n"
+                msg = "📋 **Your Active Loan Portfolio:**\n\n"
                 for l in loans:
                     rem = float(l['remaining_amount'])
                     prin = float(l['principal'])
                     paid_pct = ((prin - rem) / prin * 100) if prin > 0 else 0
+                    pending_emis = l.get('pending_emis', 0)
+                    
                     msg += (
-                        f"• **{l['name']}** ({l['lender_type'].capitalize()})\n"
+                        f"• **{l['name']}**\n"
                         f"  Remaining: {rem:,.2f} / {prin:,.2f} ({paid_pct:.1f}% paid)\n"
-                        f"  EMI: {float(l['emi_amount']):,.2f} | Priority: {l['priority'].upper()}\n\n"
+                        f"  EMI: {float(l['emi_amount']):,.2f} | **Pending EMIs: {pending_emis}**\n\n"
                     )
                 TelegramService.send_message(chat_id, msg)
 
